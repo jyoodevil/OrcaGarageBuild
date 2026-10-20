@@ -1,0 +1,36 @@
+# OrcaGarageBuild: build only the Windows x64 installer and portable zip.
+# build_all.yml (every platform, unit tests, flatpak) no longer runs on pushes
+# to main in this fork; start it by hand from the Actions tab when needed.
+name: GarageBuild Windows
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'deps/**'
+      - 'deps_src/**'
+      - 'cmake/**'
+      - 'src/**'
+      - '**/CMakeLists.txt'
+      - 'version.inc'
+      - 'localization/**'
+      - 'resources/**'
+      - 'build_win.bat'
+      - '.github/workflows/build_*.yml'
+      - '.github/workflows/garage_windows.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: garage-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_windows:
+    name: Build Windows x64
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-latest
+      arch: x64
+      compiler: clang
+    secrets: inherit

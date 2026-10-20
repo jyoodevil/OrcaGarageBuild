@@ -2,8 +2,8 @@ name: Build all
 
 on:
   push:
+    # OrcaGarageBuild: pushes to main build Windows only (garage_windows.yml).
     branches:
-     - main
      - release/*
     paths:
      - 'deps/**'
