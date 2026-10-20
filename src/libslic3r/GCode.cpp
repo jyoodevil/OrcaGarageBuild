@@ -52,6 +52,7 @@
 #include "libslic3r/format.hpp"
 #include "Time.hpp"
 #include "GCode/ExtrusionProcessor.hpp"
+#include "GCode/OozeStop.hpp"
 #include <Eigen/Geometry>
 #include <Shiny/ShinyMacros.h>
 #include <algorithm>
@@ -3305,6 +3306,23 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     const bool skip_config_block = print.config().gcode_skip_config_block;
     const WipeTowerType wipe_tower_type = print.wipe_tower_type();
     m_calib_config.clear();
+    // OrcaGarageBuild: objects named "ooze ..." stop and wait before every layer (GCode/OozeStop.hpp).
+    m_ooze_specs.clear();
+    m_ooze_pending.reset();
+    m_ooze_hover.reset();
+    m_ooze_restart_extra.reset();
+    m_ooze_last_stop = {nullptr, 0, -1};
+    m_ooze_has_chute = is_bbl_printers && printer_has_bambu_purge_chute(print.config().printer_model.value);
+    for (const PrintObject *object : print.objects()) {
+        std::optional<OozeStopSpec> spec = parse_ooze_object_name(object->model_object()->name);
+        if (!spec)
+            continue;
+        if (!spec->hover && !m_ooze_has_chute)
+            throw Slic3r::SlicingError(format(_u8L("Object \"%1%\" parks over the purge chute, which only Bambu Lab X1 and P1 "
+                                                   "printers have. Add H to its name to hover over the part instead."),
+                                              object->model_object()->name));
+        m_ooze_specs.emplace(object, *spec);
+    }
     // Orca: Calibration overrides are reapplied after object/region settings in _extrude().
     // Keep inward wiping from masking retraction and pressure advance artifacts.
     switch (print.calib_mode()) {
@@ -4325,6 +4343,10 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         file.write_format("\n");
     }
 
+    // OrcaGarageBuild: the ooze stops are already in this file; the OozePost.bat
+    // post-processing script skips files carrying this marker.
+    if (!m_ooze_specs.empty())
+        file.write("; OOZE_POST_DONE native\n");
     file.write_format("; EXECUTABLE_BLOCK_START\n");
 
     // Set for every printer, as the object label comments use these ids too.
@@ -7597,6 +7619,8 @@ LayerResult GCode::process_layer(
                     }
                 }
 
+                this->ooze_start_object(instance_to_print.print_object, instance_to_print.instance_id, layer_to_print.object_layer);
+
                 // Orca(#7946): set current obj regardless of the `enable_overhang_speed` value, because
                 // `enable_overhang_speed` is a PrintRegionConfig and here we don't have a region yet.
                 // And no side effect doing this even if `enable_overhang_speed` is off, so don't bother
@@ -7726,6 +7750,9 @@ LayerResult GCode::process_layer(
                     // ironing
                     gcode += this->extrude_infill(print,by_region_specific, true);
                 }
+                m_ooze_pending.reset();
+                m_ooze_hover.reset();
+                m_ooze_restart_extra.reset();
 
                 if (this->config().gcode_label_objects) {
                     gcode += std::string("; stop printing object ") +
@@ -9222,6 +9249,10 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         auto target_z = get_sloped_z(sloped->slope_begin.z_ratio);
         slope_need_z_travel = m_writer.will_move_z(target_z);
     }
+    // OrcaGarageBuild: an ooze test object parks and waits before the move to its restart point.
+    if (m_ooze_pending)
+        gcode += this->ooze_park(path.first_point());
+
     // Move to first point of extrusion path
     // path is 2D. But in slope lift case, lift z is done in travel_to function.
     // Add m_need_change_layer_lift_z when change_layer in case of no lift if m_last_pos is equal to path.first_point() by chance
@@ -9265,6 +9296,15 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     // if needed, write the gcode_label_objects_end then gcode_label_objects_start
     // should be already done by travel_to, but just in case
     m_writer.add_object_change_labels(gcode);
+
+    // OrcaGarageBuild: a hovering ooze stop waits here, then the restart pushes the test's
+    // extra length in place of retract_restart_extra.
+    if (m_ooze_hover)
+        gcode += this->ooze_hover();
+    if (m_ooze_restart_extra) {
+        m_writer.filament()->retract(0., *m_ooze_restart_extra);
+        m_ooze_restart_extra.reset();
+    }
 
     // compensate retraction
     gcode += this->unretract();
@@ -10753,6 +10793,141 @@ std::string GCode::retract(bool toolchange, bool is_last_retraction, LiftType li
             gcode += m_writer.lazy_lift(lift_type, m_spiral_vase != nullptr);
     }
 
+    return gcode;
+}
+
+// OrcaGarageBuild: ooze & reprime test objects (GCode/OozeStop.hpp).
+// Called when an object copy starts printing on a layer; arms the stop for its first extrusion.
+void GCode::ooze_start_object(const PrintObject &object, size_t instance_id, const Layer *object_layer)
+{
+    m_ooze_pending.reset();
+    m_ooze_hover.reset();
+    m_ooze_restart_extra.reset();
+    auto it = m_ooze_specs.find(&object);
+    if (it == m_ooze_specs.end() || object_layer == nullptr)
+        return;
+    const int layer = std::max(0, int(object_layer->id()) - int(object.slicing_parameters().raft_layers()));
+    const auto key  = std::make_tuple(&object, instance_id, layer);
+    if (key == m_ooze_last_stop)
+        return;
+    m_ooze_last_stop = key;
+    m_ooze_pending   = OozeStop{it->second, object.model_object()->name, layer, it->second.reprime_at_layer(layer)};
+}
+
+static int ooze_layer_temperature(const PrintConfig &config, const Layer *layer, size_t filament_index)
+{
+    // Same rule as OozePrevention: the first layer temperature on the first layer, or when the other layers' is 0.
+    return (layer == nullptr || layer->id() == 0 || config.nozzle_temperature.get_at(filament_index) == 0)
+        ? config.nozzle_temperature_initial_layer.get_at(filament_index)
+        : config.nozzle_temperature.get_at(filament_index);
+}
+
+// Park over the purge chute: retract, lift clear of everything printed so far, wait (optionally cooler),
+// optionally purge the reprime amount into the chute, wipe on the silicone wiper, and come back down at
+// the restart point. The unretract that follows in _extrude() pushes the test's extra length.
+std::string GCode::ooze_park(const Point &restart_point)
+{
+    const OozeStop stop = *m_ooze_pending;
+    m_ooze_pending.reset();
+    if (stop.spec.hover) {
+        m_ooze_hover = stop;
+        return {};
+    }
+
+    const bool   purge  = stop.spec.purge && stop.reprime > 0. && !m_config.use_firmware_retraction.value;
+    const size_t fi     = get_filament_config_index((int) m_writer.filament()->id());
+    const int    temp   = ooze_layer_temperature(m_config, m_layer, fi);
+    const int    cool   = stop.spec.cool_deg();
+    const bool   cooled = cool > 0 && temp > cool;
+
+    std::string gcode;
+    // Open this object's exclude-object block first, so skipping the object skips its stops too.
+    m_writer.add_object_change_labels(gcode);
+    char        buf[256];
+    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | park %g s | %s %.3f mm\n", stop.name.c_str(), stop.layer + 1,
+                  stop.spec.wait_s, purge ? "purge" : "reprime", stop.reprime);
+    gcode += buf;
+    gcode += m_writer.retract();
+
+    const double restart_z = m_nominal_z;
+    double       safe_z    = std::max({double(m_max_layer_z), restart_z, m_writer.get_position().z()}) + 3.;
+    if (m_config.printable_height.value > 0.)
+        safe_z = std::min(safe_z, m_config.printable_height.value);
+    gcode += m_writer.travel_to_z(safe_z, "ooze: lift clear of the print", true);
+    if (NOZZLE_CONFIG(travel_acceleration) > 0)
+        gcode += m_writer.set_travel_acceleration((unsigned int) std::floor(NOZZLE_CONFIG(travel_acceleration) + 0.5));
+
+    // The writer takes plate coordinates; the chute is at fixed machine coordinates.
+    const Vec2f  plate = m_writer.get_xy_offset();
+    const auto   at    = [&plate](double x, double y) { return Vec2d(x + plate.x(), y + plate.y()); };
+    const auto  &chute = bambu_purge_chute;
+    gcode += m_writer.travel_to_xy(at(chute.x, chute.approach_y), "ooze: to the purge chute");
+    gcode += m_writer.travel_to_xy(at(chute.x, chute.y), 50., "");
+    if (cooled)
+        gcode += m_writer.set_temperature((unsigned int) (temp - cool), false);
+    gcode += ooze_dwell_gcode(stop.spec.wait_s, m_ooze_has_chute);
+    if (cooled)
+        gcode += m_writer.set_temperature((unsigned int) temp, true);
+
+    if (purge) {
+        // Push the retraction back plus the reprime amount, slowly enough for the hot end to melt it.
+        Extruder    *extruder = m_writer.filament();
+        const double diameter = m_config.filament_diameter.get_at(fi);
+        const double area     = PI * diameter * diameter / 4.;
+        const double max_flow = m_config.filament_max_volumetric_speed.get_at(fi);
+        double       speed    = (max_flow > 0. && area > 0.) ? 0.5 * max_flow / area : 2.;
+        speed                 = std::clamp(speed, 0.5, std::max(0.5, double(extruder->deretract_speed())));
+        extruder->retract(0., stop.reprime);
+        extruder->unretract();
+        GCodeG1Formatter w;
+        w.emit_e(extruder->E());
+        w.emit_f(speed * 60.);
+        w.emit_comment(true, "ooze: purge into the chute");
+        gcode += w.string();
+        gcode += m_writer.retract();
+    }
+
+    for (const OozeWipeMove &move : bambu_wipe_moves)
+        gcode += m_writer.travel_to_xy(at(move.x, chute.y), move.feedrate / 60., "");
+    gcode += m_writer.travel_to_xy(at(chute.x, chute.approach_y), 50., "");
+    gcode += m_writer.travel_to_xy(this->point_to_gcode(restart_point), "ooze: back to the restart point");
+    gcode += m_writer.travel_to_z(restart_z, "ooze: down to the layer", true);
+
+    // Already at the restart point and height: _extrude() skips its own travel.
+    this->set_last_pos(restart_point);
+    m_need_change_layer_lift_z = false;
+    // A purge leaves the normal restart; otherwise the test's extra length replaces it.
+    if (!purge)
+        m_ooze_restart_extra = stop.reprime;
+    return gcode;
+}
+
+// Hover just above the restart point, the way a nozzle sits during a long travel, then come back down.
+std::string GCode::ooze_hover()
+{
+    const OozeStop stop = *m_ooze_hover;
+    m_ooze_hover.reset();
+
+    const size_t fi     = get_filament_config_index((int) m_writer.filament()->id());
+    const int    temp   = ooze_layer_temperature(m_config, m_layer, fi);
+    const int    cool   = stop.spec.cool_deg();
+    const bool   cooled = cool > 0 && temp > cool;
+
+    std::string gcode;
+    char        buf[256];
+    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | hover %g s | reprime %.3f mm\n", stop.name.c_str(), stop.layer + 1,
+                  stop.spec.wait_s, stop.reprime);
+    gcode += buf;
+    gcode += m_writer.retract();
+    const double z = m_writer.get_position().z();
+    gcode += m_writer.travel_to_z(z + std::max(1., double(m_layer ? m_layer->height : 0.)), "ooze: hover", true);
+    if (cooled)
+        gcode += m_writer.set_temperature((unsigned int) (temp - cool), false);
+    gcode += ooze_dwell_gcode(stop.spec.wait_s, m_ooze_has_chute || this->is_BBL_Printer());
+    if (cooled)
+        gcode += m_writer.set_temperature((unsigned int) temp, true);
+    gcode += m_writer.travel_to_z(z, "ooze: down to the layer", true);
+    m_ooze_restart_extra = stop.reprime;
     return gcode;
 }
 

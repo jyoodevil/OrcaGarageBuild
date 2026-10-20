@@ -3633,6 +3633,11 @@ void MainFrame::init_menubar_as_editor()
         [this](wxCommandEvent&) { run_calibration(CalibKind::Retraction); }, "", nullptr,
         [this]() {return m_plater->is_view3D_shown();; }, this);
 
+    // OrcaGarageBuild: ooze ladder and reprime check
+    append_menu_item(m_topbar->GetCalibMenu(), wxID_ANY, _L("Ooze and reprime"), _L("Ooze and reprime calibration"),
+        [this](wxCommandEvent&) { run_calibration(CalibKind::OozeReprime); }, "", nullptr,
+        [this]() {return m_plater->is_view3D_shown();; }, this);
+
     // Cornering
     append_menu_item(m_topbar->GetCalibMenu(), wxID_ANY, _L("Cornering"), _L("Cornering calibration"),
         [this](wxCommandEvent&) { run_calibration(CalibKind::Cornering); }, "", nullptr,
@@ -3737,6 +3742,11 @@ void MainFrame::init_menubar_as_editor()
     // Retraction
     append_menu_item(calib_menu, wxID_ANY, _L("Retraction"), _L("Retraction"),
         [this](wxCommandEvent&) { run_calibration(CalibKind::Retraction); }, "", nullptr,
+        [this]() {return m_plater->is_view3D_shown();; }, this);
+
+    // OrcaGarageBuild: ooze ladder and reprime check
+    append_menu_item(calib_menu, wxID_ANY, _L("Ooze and reprime"), _L("Ooze and reprime calibration"),
+        [this](wxCommandEvent&) { run_calibration(CalibKind::OozeReprime); }, "", nullptr,
         [this]() {return m_plater->is_view3D_shown();; }, this);
 
     // Cornering
@@ -4662,6 +4672,12 @@ void MainFrame::run_calibration(CalibKind calib_kind)
         if (!m_retraction_calib_dlg)
             m_retraction_calib_dlg = new Retraction_Test_Dlg((wxWindow*) this, wxID_ANY, m_plater);
         m_retraction_calib_dlg->ShowModal();
+        break;
+    }
+    case CalibKind::OozeReprime: {
+        if (!m_ooze_calib_dlg)
+            m_ooze_calib_dlg = new Ooze_Reprime_Test_Dlg((wxWindow*) this, wxID_ANY, m_plater);
+        m_ooze_calib_dlg->ShowModal();
         break;
     }
     case CalibKind::Cornering: {

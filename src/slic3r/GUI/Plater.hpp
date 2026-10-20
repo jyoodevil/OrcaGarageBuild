@@ -71,6 +71,7 @@ class MachineObject;
 enum class BuildVolume_Type : char;
 class Model;
 class ModelObject;
+struct OozeCalibParams;
 class ModelInstance;
 class Print;
 class SLAPrint;
@@ -407,6 +408,8 @@ public:
     void calib_temp(const Calib_Params& params);
     void calib_max_vol_speed(const Calib_Params& params);
     void calib_retraction(const Calib_Params& params);
+    // OrcaGarageBuild: lays out the ooze ladder or reprime check; false with a message when it can't.
+    bool calib_ooze(const OozeCalibParams& params, wxString& error);
     void calib_VFA(const Calib_Params& params);
     void calib_input_shaping_freq(const Calib_Params& params);
     void calib_input_shaping_damp(const Calib_Params& params);

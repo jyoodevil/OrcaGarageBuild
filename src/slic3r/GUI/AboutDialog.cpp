@@ -262,8 +262,8 @@ AboutDialog::AboutDialog()
         // _build_string_font.SetStyle(wxFONTSTYLE_ITALIC);
 
         vesizer->Add(0, 0, 1, wxEXPAND, FromDIP(5));
-        auto          version_string = "WaveOverhangs v" + std::string(WAVE_OVERHANGS_VERSION)
-                                     + "\nBased on OrcaSlicer " + std::string(SoftFever_VERSION);
+        auto          version_string = "OrcaGarageBuild " + std::string(GARAGE_BUILD_VERSION)
+                                     + "\nOrcaSlicer " + std::string(SoftFever_VERSION) + " with WaveOverhangs";
         wxStaticText* version = new wxStaticText(this, wxID_ANY, version_string.c_str(), wxDefaultPosition, wxDefaultSize);
         // TRN %s is the commit the application was built from
         wxStaticText* credits_string = new wxStaticText(this, wxID_ANY, wxString::Format(_L("Build %s"), build_commit_label), wxDefaultPosition, wxDefaultSize);

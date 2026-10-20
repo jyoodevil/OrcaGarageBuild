@@ -261,6 +261,8 @@ set(lisbslic3r_sources
     GCode/ConflictChecker.cpp
     GCode/ConflictChecker.hpp
     GCode/CoolingBuffer.cpp
+    GCode/OozeStop.cpp
+    GCode/OozeStop.hpp
     GCode/CoolingBuffer.hpp
     GCode/TimelapsePosPicker.cpp
     GCode/TimelapsePosPicker.hpp

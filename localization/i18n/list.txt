@@ -216,6 +216,7 @@ src/libslic3r/GCodeWriter.cpp
 src/libslic3r/GCode/ToolOrdering.cpp
 src/libslic3r/GCode/SeamPlacer.cpp
 src/libslic3r/GCode/GCodeStatistics.cpp
+src/libslic3r/GCode/OozeStop.cpp
 src/libslic3r/ExtrusionEntity.cpp
 src/libslic3r/Flow.cpp
 src/libslic3r/Format/AMF.cpp
@@ -246,6 +247,7 @@ src/slic3r/GUI/CalibrationWizardCaliPage.cpp
 src/slic3r/GUI/CaliHistoryDialog.cpp
 src/slic3r/GUI/BonjourDialog.cpp
 src/slic3r/GUI/calib_dlg.cpp
+src/slic3r/GUI/ConfigImport.cpp
 src/slic3r/GUI/PrintHostDialogs.cpp
 src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.cpp
 src/slic3r/GUI/NetworkTestDialog.cpp

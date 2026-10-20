@@ -29,6 +29,9 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <wx/tokenzr.h>
+#include "libslic3r/GCode/OozeStop.hpp"
+#include <cmath>
 #include <wx/string.h>
 #include <wx/gdicmn.h>
 #include <wx/sizer.h>
@@ -1886,5 +1889,204 @@ void FlowRateCalibrationDialog::on_start(wxCommandEvent& event) {
 void FlowRateCalibrationDialog::on_dpi_changed(const wxRect& suggested_rect) {
     this->Refresh();
 }
+
+// Ooze_Reprime_Test_Dlg (OrcaGarageBuild)
+//
+
+Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Plater* plater)
+    : DPIDialog(parent, id, _L("Ooze and reprime"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE), m_plater(plater)
+{
+    SetBackgroundColour(*wxWHITE); // make sure background color set for dialog
+    SetForegroundColour(wxColour("#363636"));
+    SetFont(Label::Body_14);
+
+    wxBoxSizer* v_sizer = new wxBoxSizer(wxVERTICAL);
+
+    // Test type
+    auto test_box = new wxStaticBoxSizer(new LabeledStaticBox(this, _L("Test")), wxHORIZONTAL);
+    m_rbTest = new RadioGroup(this, {_L("Ooze ladder"), _L("Reprime check")}, wxHORIZONTAL);
+    test_box->Add(m_rbTest, 0, wxALL | wxEXPAND, FromDIP(4));
+    v_sizer->Add(test_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+
+    const wxString cool_str          = _L("Cool while parked: ");
+    const wxString waits_str         = _L("Wait times: ");
+    const wxString reprime_start_str = _L("First reprime length: ");
+    const wxString reprime_step_str  = _L("Reprime step: ");
+    const wxString reprime_count_str = _L("Reprime lengths: ");
+    const wxString layers_str        = _L("Layers: ");
+    const wxString wait_str          = _L("Wait time: ");
+    const wxString reprime_mid_str   = _L("Middle reprime length: ");
+    const wxString boxes_str         = _L("Cylinders: ");
+    const int      text_max          = GetTextMax(this, {cool_str, waits_str, reprime_start_str, reprime_step_str, reprime_count_str,
+                                                        layers_str, wait_str, reprime_mid_str, boxes_str});
+    const wxSize   st_size(text_max, -1);
+    const wxSize   ti_size = FromDIP(wxSize(120, -1));
+
+    wxTextValidator number_validator(wxFILTER_NUMERIC);
+    wxTextValidator list_validator(wxFILTER_INCLUDE_CHAR_LIST);
+    list_validator.SetCharIncludes(wxString("0123456789.,; "));
+
+    const auto add_row = [&](wxSizer* sizer, const wxString& label, const wxString& value, const wxString& unit, const wxTextValidator& validator) {
+        auto row  = new wxBoxSizer(wxHORIZONTAL);
+        auto text = new wxStaticText(this, wxID_ANY, label, wxDefaultPosition, st_size, wxALIGN_LEFT);
+        auto ti   = new TextInput(this, value, unit, "", wxDefaultPosition, ti_size);
+        ti->GetTextCtrl()->SetValidator(validator);
+        row->Add(text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+        row->Add(ti, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+        sizer->Add(row, 0, wxLEFT, FromDIP(3));
+        return ti;
+    };
+
+    // Where the nozzle waits
+    auto stop_box = new wxStaticBoxSizer(new LabeledStaticBox(this, _L("Stop")), wxVERTICAL);
+    m_rbStop = new RadioGroup(this, {_L("Park at the purge chute"), _L("Hover over the part")}, wxHORIZONTAL);
+    stop_box->Add(m_rbStop, 0, wxALL | wxEXPAND, FromDIP(4));
+    m_stChuteNote = new wxStaticText(this, wxID_ANY, _L("This printer has no purge chute, so the nozzle hovers over the part while it waits."));
+    m_stChuteNote->Wrap(FromDIP(420));
+    stop_box->Add(m_stChuteNote, 0, wxALL, FromDIP(4));
+    m_tiCool = add_row(stop_box, cool_str, wxString::Format("%d", m_params.cool), _L("\u2103" /* °C */), number_validator);
+    v_sizer->Add(stop_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+
+    // Ooze ladder
+    wxString waits;
+    for (double w : m_params.waits)
+        waits += (waits.empty() ? "" : ", ") + wxString::FromDouble(w);
+    m_ladder_box      = new LabeledStaticBox(this, _L("Ooze ladder"));
+    auto ladder_sizer = new wxStaticBoxSizer(m_ladder_box, wxVERTICAL);
+    m_tiWaits         = add_row(ladder_sizer, waits_str, waits, _L("s"), list_validator);
+    m_tiWaits->SetToolTip(_L("Comma-separated list of wait times, one row of cylinders each, front to back."));
+    m_tiReprimeStart  = add_row(ladder_sizer, reprime_start_str, wxString::FromDouble(m_params.reprime_start), _L("mm"), number_validator);
+    m_tiReprimeStep   = add_row(ladder_sizer, reprime_step_str, wxString::FromDouble(m_params.reprime_step), _L("mm"), number_validator);
+    m_tiReprimeCount  = add_row(ladder_sizer, reprime_count_str, wxString::Format("%d", m_params.reprime_count), "", number_validator);
+    m_tiReprimeCount->SetToolTip(_L("Number of reprime lengths, one column of cylinders each, left to right."));
+    m_tiLadderLayers  = add_row(ladder_sizer, layers_str, wxString::Format("%d", m_params.ladder_layers), "", number_validator);
+    v_sizer->Add(ladder_sizer, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+
+    // Reprime check
+    m_check_box      = new LabeledStaticBox(this, _L("Reprime check"));
+    auto check_sizer = new wxStaticBoxSizer(m_check_box, wxVERTICAL);
+    m_tiWait         = add_row(check_sizer, wait_str, wxString::FromDouble(m_params.wait), _L("s"), number_validator);
+    m_tiReprimeMid   = add_row(check_sizer, reprime_mid_str, wxString::FromDouble(m_params.reprime_mid), _L("mm"), number_validator);
+    m_tiCheckStep    = add_row(check_sizer, reprime_step_str, wxString::FromDouble(m_params.check_step), _L("mm"), number_validator);
+    m_tiBoxes        = add_row(check_sizer, boxes_str, wxString::Format("%d", m_params.boxes), "", number_validator);
+    m_tiCheckLayers  = add_row(check_sizer, layers_str, wxString::Format("%d", m_params.check_layers), "", number_validator);
+    auto purge_row   = new wxBoxSizer(wxHORIZONTAL);
+    m_cbPurge        = new CheckBox(this);
+    m_cbPurge->SetValue(m_params.purge);
+    purge_row->Add(m_cbPurge, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    purge_row->Add(new wxStaticText(this, wxID_ANY, _L("Purge the reprime length into the chute, then restart normally")), 0,
+                   wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    check_sizer->Add(purge_row, 0, wxLEFT | wxTOP | wxBOTTOM, FromDIP(3));
+    v_sizer->Add(check_sizer, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+
+    auto help = new wxStaticText(this, wxID_ANY,
+        _L("A reprime length is the filament pushed back in after a stop, in place of the extra length on restart. "
+           "Each cylinder's name holds its stop, for example \"ooze W30 R1.5\"; give any object a name like that "
+           "to print it with the same stops."));
+    help->Wrap(FromDIP(440));
+    v_sizer->Add(help, 0, wxALL, FromDIP(10));
+
+    auto dlg_btns = new DialogButtons(this, {"OK"});
+    v_sizer->Add(dlg_btns, 0, wxEXPAND);
+    dlg_btns->GetOK()->Bind(wxEVT_BUTTON, &Ooze_Reprime_Test_Dlg::on_start, this);
+
+    m_rbTest->Bind(wxEVT_COMMAND_RADIOBOX_SELECTED, [this](wxCommandEvent& e) { update_controls(); e.Skip(); });
+    m_rbStop->Bind(wxEVT_COMMAND_RADIOBOX_SELECTED, [this](wxCommandEvent& e) { update_controls(); e.Skip(); });
+    // The printer can change between openings; the dialog is kept for the session.
+    Bind(wxEVT_SHOW, [this](wxShowEvent& e) {
+        if (e.IsShown())
+            update_controls();
+        e.Skip();
+    });
+
+    wxGetApp().UpdateDlgDarkUI(this);
+    SetSizerAndFit(v_sizer);
+    update_controls();
+}
+
+void Ooze_Reprime_Test_Dlg::update_controls()
+{
+    const DynamicPrintConfig& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+    const std::string         model   = printer.has("printer_model") ? printer.opt_string("printer_model") : std::string();
+    m_has_chute = wxGetApp().preset_bundle->is_bbl_vendor() && printer_has_bambu_purge_chute(model);
+    if (!m_has_chute)
+        m_rbStop->SetSelection(1);
+    m_rbStop->Enable(m_has_chute);
+    m_stChuteNote->Show(!m_has_chute);
+
+    const bool park   = m_rbStop->GetSelection() == 0;
+    const bool ladder = m_rbTest->GetSelection() == 0;
+    m_tiCool->Enable(park);
+    for (TextInput* ti : {m_tiWaits, m_tiReprimeStart, m_tiReprimeStep, m_tiReprimeCount, m_tiLadderLayers})
+        ti->Enable(ladder);
+    for (TextInput* ti : {m_tiWait, m_tiReprimeMid, m_tiCheckStep, m_tiBoxes, m_tiCheckLayers})
+        ti->Enable(!ladder);
+    m_cbPurge->Enable(!ladder && park);
+    Layout();
+    Fit();
+}
+
+void Ooze_Reprime_Test_Dlg::on_start(wxCommandEvent& event)
+{
+    const auto read = [](TextInput* ti, double& out) {
+        const wxString value = ti->GetTextCtrl()->GetValue();
+        return value.ToCDouble(&out) || value.ToDouble(&out);
+    };
+    const auto read_int = [&read](TextInput* ti, int& out) {
+        double value = 0.;
+        if (!read(ti, value) || value != std::floor(value))
+            return false;
+        out = int(value);
+        return true;
+    };
+
+    OozeCalibParams params = m_params;
+    params.ladder = m_rbTest->GetSelection() == 0;
+    params.hover  = !m_has_chute || m_rbStop->GetSelection() == 1;
+    params.purge  = m_cbPurge->GetValue();
+
+    double cool = 0.;
+    bool   ok   = read(m_tiCool, cool) && cool >= 0.;
+    params.cool = int(std::lround(cool));
+
+    params.waits.clear();
+    wxStringTokenizer tokens(m_tiWaits->GetTextCtrl()->GetValue(), ",; ");
+    while (ok && tokens.HasMoreTokens()) {
+        const wxString token = tokens.GetNextToken();
+        double         wait  = 0.;
+        if (token.empty())
+            continue;
+        if (token.ToCDouble(&wait))
+            params.waits.push_back(wait);
+        else
+            ok = false;
+    }
+    ok = ok && read(m_tiReprimeStart, params.reprime_start) && read(m_tiReprimeStep, params.reprime_step) &&
+         read_int(m_tiReprimeCount, params.reprime_count) && read_int(m_tiLadderLayers, params.ladder_layers) &&
+         read(m_tiWait, params.wait) && read(m_tiReprimeMid, params.reprime_mid) && read(m_tiCheckStep, params.check_step) &&
+         read_int(m_tiBoxes, params.boxes) && read_int(m_tiCheckLayers, params.check_layers);
+    if (!ok) {
+        MessageDialog msg_dlg(this, _L("Please enter a number in every field, and separate the wait times with commas."), wxEmptyString,
+                              wxICON_WARNING | wxOK);
+        msg_dlg.ShowModal();
+        return;
+    }
+
+    wxString error;
+    if (!m_plater->calib_ooze(params, error)) {
+        MessageDialog msg_dlg(this, error, wxEmptyString, wxICON_WARNING | wxOK);
+        msg_dlg.ShowModal();
+        return;
+    }
+    m_params = params;
+    EndModal(wxID_OK);
+}
+
+void Ooze_Reprime_Test_Dlg::on_dpi_changed(const wxRect& suggested_rect)
+{
+    this->Refresh();
+    Fit();
+}
+
 
 }} // namespace Slic3r::GUI

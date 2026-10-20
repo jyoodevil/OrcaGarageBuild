@@ -21,6 +21,7 @@
 #include "GCode/WipeTower.hpp"
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
+#include "GCode/OozeStop.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "libslic3r/ObjectID.hpp"
 #include "GCode/ExtrusionProcessor.hpp"
@@ -43,6 +44,7 @@
 #include <unordered_map>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <string>
 #include <cfloat>
 #include <vector>
@@ -851,6 +853,29 @@ protected:
     // Orca: accumulated wave-extrusion time on the current layer (seconds).
     // Used by wave_overhang_min_layer_time; reset at each layer change.
     double                              m_wave_layer_accumulated_time = 0.;
+
+    // OrcaGarageBuild: ooze & reprime test objects (see GCode/OozeStop.hpp).
+    struct OozeStop
+    {
+        OozeStopSpec spec;
+        std::string  name;
+        int          layer   = 0;  // 0-based layer of the object
+        double       reprime = 0.; // extra restart length for this layer
+    };
+    // Stop settings of every object named "ooze ...", read once per export.
+    std::map<const PrintObject*, OozeStopSpec> m_ooze_specs;
+    bool                                m_ooze_has_chute = false;
+    // Set when an ooze object starts a layer; the next extrusion parks before travelling.
+    std::optional<OozeStop>             m_ooze_pending;
+    // A hover stop runs at the restart point, after the travel.
+    std::optional<OozeStop>             m_ooze_hover;
+    // Restart length that replaces retract_restart_extra on the next unretract.
+    std::optional<double>               m_ooze_restart_extra;
+    // Object, copy and layer of the last stop, so a second visit on the same layer doesn't stop again.
+    std::tuple<const PrintObject*, size_t, int> m_ooze_last_stop{nullptr, 0, -1};
+    void        ooze_start_object(const PrintObject &object, size_t instance_id, const Layer *object_layer);
+    std::string ooze_park(const Point &restart_point);
+    std::string ooze_hover();
 
     std::unique_ptr<CoolingBuffer>      m_cooling_buffer;
     std::unique_ptr<SpiralVase>         m_spiral_vase;

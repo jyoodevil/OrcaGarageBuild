@@ -19,6 +19,7 @@
 #include <wx/radiobox.h>
 #include <wx/sizer.h>
 #include "libslic3r/calib.hpp"
+#include "libslic3r/GCode/OozeStop.hpp"
 
 namespace Slic3r { namespace GUI {
 
@@ -129,6 +130,39 @@ protected:
     TextInput* m_tiEnd;
     TextInput* m_tiStep;
     Plater* m_plater;
+};
+
+// OrcaGarageBuild: ooze ladder and reprime check (see libslic3r/GCode/OozeStop.hpp).
+class Ooze_Reprime_Test_Dlg : public DPIDialog
+{
+public:
+    Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Plater* plater);
+    void on_dpi_changed(const wxRect& suggested_rect) override;
+
+protected:
+    void on_start(wxCommandEvent& event);
+    void update_controls();
+
+    Plater*          m_plater;
+    OozeCalibParams  m_params;
+    bool             m_has_chute{false};
+    RadioGroup*      m_rbTest;
+    RadioGroup*      m_rbStop;
+    TextInput*       m_tiCool;
+    TextInput*       m_tiWaits;
+    TextInput*       m_tiReprimeStart;
+    TextInput*       m_tiReprimeStep;
+    TextInput*       m_tiReprimeCount;
+    TextInput*       m_tiLadderLayers;
+    TextInput*       m_tiWait;
+    TextInput*       m_tiReprimeMid;
+    TextInput*       m_tiCheckStep;
+    TextInput*       m_tiBoxes;
+    TextInput*       m_tiCheckLayers;
+    CheckBox*        m_cbPurge;
+    wxStaticText*    m_stChuteNote;
+    LabeledStaticBox* m_ladder_box;
+    LabeledStaticBox* m_check_box;
 };
 
 class Input_Shaping_Freq_Test_Dlg : public DPIDialog

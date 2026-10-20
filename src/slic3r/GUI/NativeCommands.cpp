@@ -290,6 +290,8 @@ std::vector<NativeCommand> build_command_catalog()
         [](const std::string&) { return calib_command(CalibKind::FlowRatio); });
     add_with_icon("calib_retraction", L("Retraction Calibration"), L("Calibration"), "param_retraction",
         [](const std::string&) { return calib_command(CalibKind::Retraction); });
+    add_with_icon("calib_ooze_reprime", L("Ooze and Reprime Calibration"), L("Calibration"), "param_retraction",
+        [](const std::string&) { return calib_command(CalibKind::OozeReprime); });
     add_with_icon("calib_cornering", L("Cornering Calibration"), L("Calibration"), "param_precision",
         [](const std::string&) { return calib_command(CalibKind::Cornering); });
     add_with_icon("calib_input_shaping_freq", L("Input Shaping Frequency Calibration"), L("Calibration"), "param_resonance_avoidance",

@@ -43,6 +43,7 @@
 #include "libslic3r/Preset.hpp"
 #include <fstream>
 #include "libslic3r/calib.hpp"
+#include "libslic3r/GCode/OozeStop.hpp"
 #include <iterator>
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -17744,6 +17745,85 @@ void Plater::calib_retraction(const Calib_Params& params)
 
     _calib_apply_belt_mode();
     p->background_process.fff_print()->set_calib_params(params);
+}
+
+// OrcaGarageBuild: a plate of hollow cylinders named "ooze W<s> R<mm> ...". The names carry the stop
+// settings (see libslic3r/GCode/OozeStop.hpp), so the plate keeps working after a save and reload and
+// the user can retune one cylinder by renaming it.
+bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
+{
+    const BoundingBoxf bed = build_volume().bounding_volume2d();
+    std::string        layout_error;
+    const std::optional<OozeCalibLayout> layout = ooze_calib_layout(params, bed.min, bed.max, &layout_error);
+    if (!layout) {
+        error = from_u8(layout_error);
+        return false;
+    }
+
+    new_project(false, false, _L("Ooze and reprime"));
+    wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
+
+    auto print_config   = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    auto printer_config = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
+    // Each layer starts with a stop, which a spiral vase would never make.
+    print_config->set_key_value("spiral_mode", new ConfigOptionBool(false));
+    print_config->set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    // Firmware retraction ignores the restart length the test sets.
+    printer_config->set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
+
+    const double first_layer_height = print_config->opt_float("initial_layer_print_height");
+    const double layer_height       = print_config->opt_float("layer_height");
+    const double height             = first_layer_height + (layout->layers - 1) * layer_height;
+
+    PartPlate          *plate  = get_partplate_list().get_plate(0);
+    const Vec3d         origin = plate ? plate->get_origin() : Vec3d::Zero();
+    std::vector<size_t> object_idxs;
+    for (const OozeCalibObject &test : layout->objects) {
+        const TriangleMesh mesh(its_make_cylinder(0.5 * layout->diameter, height));
+        sidebar().obj_list()->load_mesh_object(mesh, from_u8(test.name), false);
+        const size_t obj_idx = model().objects.size() - 1;
+        ModelObject *obj     = model().objects[obj_idx];
+        obj->name            = test.name;
+        obj->instances[0]->set_offset(origin + Vec3d(test.center.x(), test.center.y(), 0.));
+        obj->ensure_on_bed();
+
+        // Hollow walls, so every layer is one restart and nothing else; the outer wall prints first
+        // and the seam sits at the back, where the restart can be read.
+        auto &cfg = obj->config;
+        cfg.set_key_value("wall_loops", new ConfigOptionInt(2));
+        cfg.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+        cfg.set_key_value("bottom_shell_layers", new ConfigOptionInt(0));
+        cfg.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+        cfg.set_key_value("wall_sequence", new ConfigOptionEnum<WallSequence>(WallSequence::OuterInner));
+        cfg.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
+        cfg.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
+        cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+        cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+        cfg.set_key_value("brim_width", new ConfigOptionFloat(layout->brim));
+
+        get_partplate_list().add_to_plate(int(obj_idx), 0, 0);
+        object_idxs.emplace_back(obj_idx);
+    }
+    changed_objects(object_idxs);
+    // The stops come from the object names; clear any calibration mode an earlier test left behind.
+    p->background_process.fff_print()->set_calib_params(Calib_Params());
+
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+
+    const wxString how_to_read = params.ladder ?
+        // TRN: %1% is the number of stops, %2% the minutes spent waiting.
+        format_wxstr(_L("Ooze ladder: %1% stops, about %2% minutes of waiting. Rows run front to back by wait time and "
+                        "columns left to right by reprime length. Each restart is on the back of its cylinder: a gap "
+                        "means too little reprime, a blob too much."),
+                     layout->stops, int(std::lround(layout->wait_total / 60.))) :
+        format_wxstr(_L("Reprime check: %1% stops, about %2% minutes of waiting. Reprime lengths rise from left to "
+                        "right. Pick the cylinder whose seam at the back is neither gapped nor blobbed."),
+                     layout->stops, int(std::lround(layout->wait_total / 60.)));
+    get_notification_manager()->push_notification(how_to_read.utf8_string());
+    return true;
 }
 
 void Plater::calib_VFA(const Calib_Params& params)

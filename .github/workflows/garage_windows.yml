@@ -23,7 +23,8 @@ on:
 
 concurrency:
   group: garage-windows-${{ github.ref }}
-  cancel-in-progress: true
+  # A deps build takes over an hour; let it finish so its cache is saved.
+  cancel-in-progress: false
 
 jobs:
   build_windows:
@@ -34,3 +35,29 @@ jobs:
       arch: x64
       compiler: clang
     secrets: inherit
+
+  # Runs the OrcaGarageBuild tests from the test binaries the build uploads.
+  garage_tests:
+    name: GarageBuild tests
+    needs: build_windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            tests
+            resources
+      - name: Restore Test Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ github.sha }}-tests-windows-x64
+      - name: Run the ooze stop tests
+        shell: bash
+        run: |
+          tar -xf build_tests.tar
+          for suite in libslic3r fff_print; do
+            exe=$(find build/tests/$suite -name "${suite}_tests.exe" | head -n 1)
+            echo "== $exe"
+            "$exe" "[OozeStop]"
+          done

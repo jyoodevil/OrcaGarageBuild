@@ -1,3 +1,7 @@
+> **OrcaGarageBuild** is a personal test fork: upstream OrcaSlicer plus wave overhangs and an ooze and reprime
+> calibration for large nozzles. It installs alongside OrcaSlicer with its own settings. See
+> [docs/GARAGEBUILD.md](docs/GARAGEBUILD.md). Everything below is upstream OrcaSlicer's README.
+
 <div align="center">
 
 <picture>

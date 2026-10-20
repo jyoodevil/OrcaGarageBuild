@@ -6877,7 +6877,7 @@ std::string GUI_App::format_display_version()
 {
     if (!version_display.empty()) return version_display;
 
-    version_display = "WaveOverhangs v" + std::string(WAVE_OVERHANGS_VERSION)
+    version_display = "OrcaGarageBuild " + std::string(GARAGE_BUILD_VERSION)
                     + " (OrcaSlicer " + std::string(SoftFever_VERSION) + ")";
     return version_display;
 }

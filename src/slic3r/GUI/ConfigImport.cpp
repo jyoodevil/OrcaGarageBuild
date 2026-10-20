@@ -14,6 +14,7 @@
 #include <sstream>
 #include <wx/checkbox.h>
 #include <wx/dialog.h>
+#include <wx/filename.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 #include <wx/stdpaths.h>
@@ -93,6 +94,9 @@ std::vector<ImportCandidate> detect_import_candidates()
     const auto roots = config_root_candidates();
     struct Spec { ImportSource src; std::string dir_name; std::string label; bool supported; };
     const std::vector<Spec> specs = {
+        // OrcaGarageBuild: the WaveOverhangs fork this build grew out of comes first, so it is
+        // the one ticked by default.
+        { ImportSource::OrcaSlicer,  "OrcaSlicerWaveOverhangs", "OrcaSlicer WaveOverhangs", true },
         { ImportSource::OrcaSlicer,  "OrcaSlicer",   "OrcaSlicer",                 true },
         { ImportSource::BambuStudio, "BambuStudio",  "Bambu Studio",               true },
         { ImportSource::PrusaSlicer, "PrusaSlicer",  "PrusaSlicer (partial)",      true },
