@@ -1,3 +1,22 @@
+#include <string>
+#include <vector>
+#include <cstddef>
+#include <wx/string.h>
+#include <wx/utils.h>
+#include <boost/nowide/convert.hpp>
+#include <boost/filesystem/operations.hpp>
+#include <fstream>
+#include <cstdlib>
+#include <exception>
+#include "libslic3r_version.h"
+#include <cstdio>
+#include <cassert>
+#include <wx/event.h>
+#include <wx/gdicmn.h>
+#include <wx/dialog.h>
+#include <wx/toplevel.h>
+#include <wx/sizer.h>
+#include "slic3r/GUI/Plater.hpp"
 #ifdef __linux__
 #include "DesktopIntegrationDialog.hpp"
 #include "GUI_App.hpp"
@@ -342,7 +361,7 @@ void DesktopIntegrationDialog::perform_desktop_integration()
                 "Categories=Graphics;3DGraphics;Engineering;\n"
                 "Keywords=3D;Printing;Slicer;slice;3D;printer;convert;gcode;stl;obj;amf;SLA\n"
                 "StartupNotify=false\n"
-                "StartupWMClass=orca-waveoverhangs\n", name_suffix, version_suffix, excutable_path);
+                "StartupWMClass=orca-garagebuild\n", name_suffix, version_suffix, excutable_path);
 
             std::string path = GUI::format("%1%/applications/com.orcaslicer.OrcaSlicer%2%.desktop", target_dir_desktop, version_suffix);
             if (create_desktop_file(path, desktop_file)){
@@ -633,7 +652,7 @@ DesktopIntegrationDialog::DesktopIntegrationDialog(wxWindow *parent)
 
 	wxString text = _L("Desktop Integration sets this binary to be searchable by the system.\n\nPress \"Perform\" to proceed.");
 	if (can_undo)
-		text += "\nPress \"Undo\" to remove previous integration.";
+		text += "\n" + _L("Press \"Undo\" to remove previous integration.");
 
     vbox->Add(
         new wxStaticText( this, wxID_ANY, text),
@@ -645,7 +664,7 @@ DesktopIntegrationDialog::DesktopIntegrationDialog(wxWindow *parent)
 	
 
 	wxBoxSizer *btn_szr = new wxBoxSizer(wxHORIZONTAL);
-	wxButton *btn_perform = new wxButton(this, wxID_ANY, _L("Perform"));
+	wxButton *btn_perform = new wxButton(this, wxID_ANY, _L("Apply"));
 	btn_szr->Add(btn_perform, 0, wxALL, 10);
 
 	btn_perform->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { DesktopIntegrationDialog::perform_desktop_integration(); EndModal(wxID_ANY); });
