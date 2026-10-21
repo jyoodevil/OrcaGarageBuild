@@ -51,6 +51,27 @@ DynamicPrintConfig ooze_config()
 // Where slice_ooze_cube() puts the cube's centre on the 200 mm bed, with room behind it for a tower.
 const Vec2d ooze_cube_center(100., 80.);
 
+// Moves an object's first copy so its bounding box is centred on center, leaving its height alone.
+void place_on_bed(ModelObject &object, const Vec2d &center)
+{
+    ModelInstance      *instance = object.instances.front();
+    const BoundingBoxf3 box      = object.instance_bounding_box(0);
+    instance->set_offset(instance->get_offset() + Vec3d(center.x() - box.center().x(), center.y() - box.center().y(), 0.));
+    object.invalidate_bounding_box();
+}
+
+// Role tags of the given extrusion role: "; FEATURE: <role>" on Bambu printers, ";TYPE:<role>" elsewhere.
+size_t count_role_tags(const std::string &gcode, const std::string &role)
+{
+    size_t             n = 0;
+    std::istringstream in(gcode);
+    std::string        line;
+    while (std::getline(in, line))
+        if (line == "; FEATURE: " + role || line == ";TYPE:" + role)
+            ++n;
+    return n;
+}
+
 std::string slice_ooze_cube(const std::string &name, DynamicPrintConfig config, bool bambu_x1)
 {
     if (bambu_x1)
@@ -59,11 +80,8 @@ std::string slice_ooze_cube(const std::string &name, DynamicPrintConfig config, 
     print.is_BBL_printer() = bambu_x1;
     Model model;
     Test::init_print(std::vector<TriangleMesh>{Test::cube(4.)}, print, model, config);
-    ModelObject *object = model.objects.front();
-    object->name        = name;
-    object->center_around_origin();
-    object->instances.front()->set_offset(Vec3d(ooze_cube_center.x(), ooze_cube_center.y(), object->instances.front()->get_offset().z()));
-    object->ensure_on_bed();
+    model.objects.front()->name = name;
+    place_on_bed(*model.objects.front(), ooze_cube_center);
     print.apply(model, config);
     return Test::gcode(print);
 }
@@ -208,7 +226,7 @@ TEST_CASE("A tower stop waits over the hollow of a tower behind the object and p
     CHECK(count_of(gcode, "; OOZE stop") == ooze_layers);
     CHECK(count_of(gcode, "G4 P5000") == ooze_layers);
     // One layer of the tower per stop.
-    CHECK(count_of(gcode, "; FEATURE: Prime tower") == ooze_layers);
+    CHECK(count_role_tags(gcode, "Prime tower") == ooze_layers);
 
     // The nozzle waits behind the cube, clear of it.
     std::istringstream in(gcode);
@@ -267,12 +285,8 @@ std::string slice_two_cubes_with_ooze_tower(bool tower)
     Model model;
     Test::init_print(std::vector<TriangleMesh>{Test::cube(4.), Test::cube(4.)}, print, model, config);
     const double x[] = {30., 170.};
-    for (size_t i = 0; i < 2; ++i) {
-        model.objects[i]->center_around_origin();
-        ModelInstance *instance = model.objects[i]->instances.front();
-        instance->set_offset(Vec3d(x[i], 100., instance->get_offset().z()));
-        model.objects[i]->ensure_on_bed();
-    }
+    for (size_t i = 0; i < 2; ++i)
+        place_on_bed(*model.objects[i], Vec2d(x[i], 100.));
     print.apply(model, config);
     return Test::gcode(print);
 }
@@ -300,5 +314,5 @@ TEST_CASE("Without the ooze tower option, travels go straight", "[OozeStop][Ooze
 {
     const std::string gcode = slice_two_cubes_with_ooze_tower(false);
     CHECK(gcode.find("; OOZE tower") == std::string::npos);
-    CHECK(gcode.find("; FEATURE: Prime tower") == std::string::npos);
+    CHECK(count_role_tags(gcode, "Prime tower") == 0);
 }
