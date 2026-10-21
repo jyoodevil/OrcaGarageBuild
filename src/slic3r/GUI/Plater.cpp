@@ -17783,15 +17783,15 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
     const Vec3d         origin = plate ? plate->get_origin() : Vec3d::Zero();
     std::vector<size_t> object_idxs;
     for (const OozeCalibObject &test : layout->objects) {
-        const TriangleMesh mesh(its_make_cylinder(0.5 * layout->diameter, height));
+        // load_mesh_object() places the object where the mesh is, on the bed. Build the cylinder in its
+        // place, so the plate never sees it hanging off the bed corner: an instance the plate once marked
+        // as outside stays marked until it is moved, and that disables "Export plate sliced file".
+        TriangleMesh mesh(its_make_cylinder(0.5 * layout->diameter, height));
+        mesh.translate((origin + Vec3d(test.center.x(), test.center.y(), 0.)).cast<float>());
         sidebar().obj_list()->load_mesh_object(mesh, from_u8(test.name), false);
         const size_t obj_idx = model().objects.size() - 1;
         ModelObject *obj     = model().objects[obj_idx];
         obj->name            = test.name;
-        // Keep the height load_mesh_object() gave it: an instance moved partly below the bed counts as
-        // sunk on purpose, so ensure_on_bed() leaves it there and only its top would be sliced.
-        obj->instances[0]->set_offset(origin + Vec3d(test.center.x(), test.center.y(), obj->instances[0]->get_offset().z()));
-        obj->ensure_on_bed();
 
         // Hollow walls, so every layer is one restart and nothing else; the outer wall prints first
         // and the seam sits at the back, where the restart can be read.
@@ -17809,7 +17809,8 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
         cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
         cfg.set_key_value("brim_width", new ConfigOptionFloat(layout->brim));
 
-        get_partplate_list().add_to_plate(int(obj_idx), 0, 0);
+        // Recheck the instance against the plate it landed on.
+        get_partplate_list().notify_instance_update(int(obj_idx), 0);
         object_idxs.emplace_back(obj_idx);
     }
     changed_objects(object_idxs);
