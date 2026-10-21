@@ -17784,7 +17784,9 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
         const size_t obj_idx = model().objects.size() - 1;
         ModelObject *obj     = model().objects[obj_idx];
         obj->name            = test.name;
-        obj->instances[0]->set_offset(origin + Vec3d(test.center.x(), test.center.y(), 0.));
+        // Keep the height load_mesh_object() gave it: an instance moved partly below the bed counts as
+        // sunk on purpose, so ensure_on_bed() leaves it there and only its top would be sliced.
+        obj->instances[0]->set_offset(origin + Vec3d(test.center.x(), test.center.y(), obj->instances[0]->get_offset().z()));
         obj->ensure_on_bed();
 
         // Hollow walls, so every layer is one restart and nothing else; the outer wall prints first
@@ -17795,6 +17797,8 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
         cfg.set_key_value("bottom_shell_layers", new ConfigOptionInt(0));
         cfg.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
         cfg.set_key_value("wall_sequence", new ConfigOptionEnum<WallSequence>(WallSequence::OuterInner));
+        // Precise wall is ignored with the outer wall first, and warns about it.
+        cfg.set_key_value("precise_outer_wall", new ConfigOptionBool(false));
         cfg.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
         cfg.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
         cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));

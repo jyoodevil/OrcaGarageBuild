@@ -10854,14 +10854,24 @@ std::string GCode::ooze_park(const Point &restart_point)
     if (m_config.printable_height.value > 0.)
         safe_z = std::min(safe_z, m_config.printable_height.value);
     gcode += m_writer.travel_to_z(safe_z, "ooze: lift clear of the print", true);
-    if (NOZZLE_CONFIG(travel_acceleration) > 0)
-        gcode += m_writer.set_travel_acceleration((unsigned int) std::floor(NOZZLE_CONFIG(travel_acceleration) + 0.5));
+    // The trip to the chute is not part of the wait being measured, so it runs at up to 250 mm/s and
+    // 5000 mm/s^2 within the machine limits, whatever slow travel the profile uses. Acceleration is only
+    // touched when the profile controls it, because then the extrusion that follows sets it again.
+    double park_speed = 250.;
+    for (double limit : {m_config.machine_max_speed_x.get_at(0), m_config.machine_max_speed_y.get_at(0)})
+        if (limit > 0.)
+            park_speed = std::min(park_speed, limit);
+    double park_accel = 5000.;
+    if (m_config.machine_max_acceleration_travel.get_at(0) > 0.)
+        park_accel = std::min(park_accel, m_config.machine_max_acceleration_travel.get_at(0));
+    if (NOZZLE_CONFIG(default_acceleration) > 0)
+        gcode += m_writer.set_travel_acceleration((unsigned int) std::lround(park_accel));
 
     // The writer takes plate coordinates; the chute is at fixed machine coordinates.
     const Vec2f  plate = m_writer.get_xy_offset();
     const auto   at    = [&plate](double x, double y) { return Vec2d(x + plate.x(), y + plate.y()); };
     const auto  &chute = bambu_purge_chute;
-    gcode += m_writer.travel_to_xy(at(chute.x, chute.approach_y), "ooze: to the purge chute");
+    gcode += m_writer.travel_to_xy(at(chute.x, chute.approach_y), park_speed, "ooze: to the purge chute");
     gcode += m_writer.travel_to_xy(at(chute.x, chute.y), 50., "");
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) (temp - cool), false);
@@ -10890,7 +10900,7 @@ std::string GCode::ooze_park(const Point &restart_point)
     for (const OozeWipeMove &move : bambu_wipe_moves)
         gcode += m_writer.travel_to_xy(at(move.x, chute.y), move.feedrate / 60., "");
     gcode += m_writer.travel_to_xy(at(chute.x, chute.approach_y), 50., "");
-    gcode += m_writer.travel_to_xy(this->point_to_gcode(restart_point), "ooze: back to the restart point");
+    gcode += m_writer.travel_to_xy(this->point_to_gcode(restart_point), park_speed, "ooze: back to the restart point");
     gcode += m_writer.travel_to_z(restart_z, "ooze: down to the layer", true);
 
     // Already at the restart point and height: _extrude() skips its own travel.

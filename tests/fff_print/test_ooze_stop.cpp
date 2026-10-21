@@ -118,11 +118,16 @@ TEST_CASE("Objects that are not ooze objects print without stops", "[OozeStop]")
 
 TEST_CASE("An X1 parks over the purge chute, cools while it waits and wipes", "[OozeStop]")
 {
-    const std::string gcode = slice_ooze_cube("ooze W5 R1 C10", ooze_config(), true);
+    // A slow travel speed must not slow the trip to the chute, which isn't part of the wait.
+    DynamicPrintConfig config = ooze_config();
+    config.set_deserialize_strict({{"travel_speed", 20}, {"initial_layer_travel_speed", 20}});
+    const std::string gcode = slice_ooze_cube("ooze W5 R1 C10", config, true);
 
     CHECK(count_of(gcode, "; OOZE stop") == ooze_layers);
     CHECK(count_of(gcode, "M400 S5") == ooze_layers);
     CHECK(gcode.find(" Y265") != std::string::npos);
+    // 250 mm/s, within the default 500 mm/s machine limit.
+    CHECK(count_of(gcode, "X70 Y245 F15000") == ooze_layers);
     CHECK(count_of(gcode, "M104 S210") == ooze_layers);
     CHECK(count_of(gcode, "M109 S220") >= size_t(ooze_layers));
     // The OozePost.bat post-processor must leave the file alone.
