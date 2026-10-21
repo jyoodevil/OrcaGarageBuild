@@ -22,6 +22,7 @@
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
 #include "GCode/OozeStop.hpp"
+#include "GCode/OozeTower.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "libslic3r/ObjectID.hpp"
 #include "GCode/ExtrusionProcessor.hpp"
@@ -857,10 +858,12 @@ protected:
     // OrcaGarageBuild: ooze & reprime test objects (see GCode/OozeStop.hpp).
     struct OozeStop
     {
-        OozeStopSpec spec;
-        std::string  name;
-        int          layer   = 0;  // 0-based layer of the object
-        double       reprime = 0.; // extra restart length for this layer
+        OozeStopSpec       spec;
+        std::string        name;
+        int                layer    = 0;  // 0-based layer of the object
+        double             reprime  = 0.; // extra restart length for this layer
+        const PrintObject *object   = nullptr;
+        size_t             instance = 0;
     };
     // Stop settings of every object named "ooze ...", read once per export.
     std::map<const PrintObject*, OozeStopSpec> m_ooze_specs;
@@ -873,9 +876,29 @@ protected:
     std::optional<double>               m_ooze_restart_extra;
     // Object, copy and layer of the last stop, so a second visit on the same layer doesn't stop again.
     std::tuple<const PrintObject*, size_t, int> m_ooze_last_stop{nullptr, 0, -1};
+    // Towers of ooze test objects with T in their name, by object and copy.
+    std::map<std::pair<const PrintObject*, size_t>, OozeTower> m_ooze_object_towers;
+    // The print's ooze tower for long travels (ooze_tower), and the layer it is on.
+    std::optional<OozeTower>            m_ooze_tower;
+    double                              m_ooze_tower_layer_z = 0.;
+    bool                                m_ooze_tower_busy    = false;
+    void        ooze_setup(const Print &print);
     void        ooze_start_object(const PrintObject &object, size_t instance_id, const Layer *object_layer);
     std::string ooze_park(const Point &restart_point);
     std::string ooze_hover();
+    std::string ooze_tower_stop(const OozeStop &stop, const Point &restart_point);
+    // Fast moves for trips that are not part of a measured wait; returns the G-code and sets the speed.
+    std::string ooze_fast_moves(double &speed);
+    std::string ooze_extra_retract(const OozeStopSpec &spec);
+    std::string ooze_purge(double length, const std::string &comment);
+    // Prints up to count loops of the tower's current layer, starting at start_angle; ends unretracted.
+    std::string ooze_tower_loops(OozeTower &tower, size_t count, double start_angle);
+    // Wipes along the loop under the nozzle, retracted.
+    std::string ooze_tower_wipe(const OozeTower &tower);
+    bool        ooze_tower_wanted(const Point &point, ExtrusionRole role);
+    // Goes through the print's ooze tower: one loop on the way to point, or all the loops the layer has left.
+    std::string ooze_tower_visit(const Point &point, ExtrusionRole role, bool rest_of_layer);
+    Vec2d       ooze_to_writer(const Vec2d &print_xy) const;
 
     std::unique_ptr<CoolingBuffer>      m_cooling_buffer;
     std::unique_ptr<SpiralVase>         m_spiral_vase;

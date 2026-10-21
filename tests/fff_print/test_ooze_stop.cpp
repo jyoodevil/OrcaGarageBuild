@@ -6,6 +6,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/GCode/OozeTower.hpp"
 
 #include "test_helpers.hpp"
 
@@ -47,6 +48,9 @@ DynamicPrintConfig ooze_config()
     return config;
 }
 
+// Where slice_ooze_cube() puts the cube's centre on the 200 mm bed, with room behind it for a tower.
+const Vec2d ooze_cube_center(100., 80.);
+
 std::string slice_ooze_cube(const std::string &name, DynamicPrintConfig config, bool bambu_x1)
 {
     if (bambu_x1)
@@ -55,9 +59,33 @@ std::string slice_ooze_cube(const std::string &name, DynamicPrintConfig config, 
     print.is_BBL_printer() = bambu_x1;
     Model model;
     Test::init_print(std::vector<TriangleMesh>{Test::cube(4.)}, print, model, config);
-    model.objects.front()->name = name;
+    ModelObject *object = model.objects.front();
+    object->name        = name;
+    object->center_around_origin();
+    object->instances.front()->set_offset(Vec3d(ooze_cube_center.x(), ooze_cube_center.y(), object->instances.front()->get_offset().z()));
+    object->ensure_on_bed();
     print.apply(model, config);
     return Test::gcode(print);
+}
+
+// Positive E-only moves (pushes back after a retraction) after each "; OOZE stop" marker, up to count per stop.
+std::vector<std::vector<double>> pushes_after(const std::string &gcode, const std::string &marker, size_t count)
+{
+    std::vector<std::vector<double>> out;
+    std::istringstream               in(gcode);
+    std::string                      line;
+    while (std::getline(in, line)) {
+        if (line.rfind(marker, 0) == 0) {
+            out.emplace_back();
+            continue;
+        }
+        if (out.empty() || out.back().size() >= count || line.rfind("G1 E", 0) != 0)
+            continue;
+        const double e = std::stod(line.substr(4));
+        if (e > 0.)
+            out.back().push_back(e);
+    }
+    return out;
 }
 
 size_t count_of(const std::string &text, const std::string &token)
@@ -169,4 +197,108 @@ TEST_CASE("A purge stop pushes the reprime into the chute and restarts normally"
 TEST_CASE("Parking an ooze object needs a printer with a purge chute", "[OozeStop]")
 {
     CHECK_THROWS(slice_ooze_cube("ooze W5 R1", ooze_config(), false));
+}
+
+TEST_CASE("A tower stop waits over the hollow of a tower behind the object and prints the tower before restarting",
+          "[OozeStop][OozeTower]")
+{
+    // No purge chute needed. Retract 2 mm more while waiting, then reprime 1 mm.
+    const std::string gcode = slice_ooze_cube("ooze W5 R1 D2 T", ooze_config(), false);
+
+    CHECK(count_of(gcode, "; OOZE stop") == ooze_layers);
+    CHECK(count_of(gcode, "G4 P5000") == ooze_layers);
+    // One layer of the tower per stop.
+    CHECK(count_of(gcode, "; FEATURE: Prime tower") == ooze_layers);
+
+    // The nozzle waits behind the cube, clear of it.
+    std::istringstream in(gcode);
+    std::string        line;
+    double             x = 0., y = 0.;
+    std::vector<Vec2d> waits;
+    while (std::getline(in, line)) {
+        if (line.rfind("G4 P5000", 0) == 0)
+            waits.emplace_back(x, y);
+        if (line.rfind("G1 ", 0) != 0)
+            continue;
+        if (const size_t at = line.find(" X"); at != std::string::npos)
+            x = std::stod(line.substr(at + 2));
+        if (const size_t at = line.find(" Y"); at != std::string::npos)
+            y = std::stod(line.substr(at + 2));
+    }
+    REQUIRE(waits.size() == ooze_layers);
+    for (const Vec2d &wait : waits) {
+        CHECK_THAT(wait.x(), WithinAbs(ooze_cube_center.x(), 1e-3));
+        CHECK(wait.y() > ooze_cube_center.y() + 2. + ooze_tower_clearance);
+    }
+
+    // The tower takes back the retraction and the extra 2 mm; the cube restarts with the retraction and the reprime.
+    const std::vector<std::vector<double>> pushes = pushes_after(gcode, "; OOZE stop", 2);
+    REQUIRE(pushes.size() == ooze_layers);
+    for (const std::vector<double> &stop : pushes) {
+        REQUIRE(stop.size() == 2);
+        CHECK_THAT(stop[0], WithinAbs(ooze_retraction + 2., 1e-4));
+        CHECK_THAT(stop[1], WithinAbs(ooze_retraction + 1., 1e-4));
+    }
+}
+
+TEST_CASE("An ooze tower that does not fit on the bed is an error", "[OozeStop][OozeTower]")
+{
+    DynamicPrintConfig config = ooze_config();
+    config.set_deserialize_strict({{"ooze_tower_diameter", 300}});
+    CHECK_THROWS(slice_ooze_cube("ooze W5 R1 T", config, false));
+}
+
+namespace {
+
+// Two 4 mm cubes 140 mm apart, with the print's ooze tower between and behind them.
+std::string slice_two_cubes_with_ooze_tower(bool tower)
+{
+    DynamicPrintConfig config = ooze_config();
+    config.set_deserialize_strict({
+        {"travel_speed", 50},
+        {"ooze_tower", tower ? 1 : 0},
+        {"ooze_tower_x", 100},
+        {"ooze_tower_y", 140},
+        // A trip between the cubes takes 2.8 s, from the tower to either cube under 1.4 s.
+        {"ooze_tower_travel_time", 2},
+        {"ooze_tower_reprime", 1.5},
+    });
+    Print print;
+    Model model;
+    Test::init_print(std::vector<TriangleMesh>{Test::cube(4.), Test::cube(4.)}, print, model, config);
+    const double x[] = {30., 170.};
+    for (size_t i = 0; i < 2; ++i) {
+        model.objects[i]->center_around_origin();
+        ModelInstance *instance = model.objects[i]->instances.front();
+        instance->set_offset(Vec3d(x[i], 100., instance->get_offset().z()));
+        model.objects[i]->ensure_on_bed();
+    }
+    print.apply(model, config);
+    return Test::gcode(print);
+}
+
+} // namespace
+
+TEST_CASE("Long travels between parts go through the print's ooze tower, which grows every layer", "[OozeStop][OozeTower]")
+{
+    const std::string gcode = slice_two_cubes_with_ooze_tower(true);
+
+    // Each layer travels once between the cubes, and the rest of the tower's layer is printed at its end.
+    CHECK(count_of(gcode, "; OOZE tower: visit") >= ooze_layers);
+    CHECK(count_of(gcode, "; OOZE tower: rest of the layer") == ooze_layers);
+
+    // After the tower, the part restarts with the retraction and the tower's reprime.
+    const std::vector<std::vector<double>> pushes = pushes_after(gcode, "; OOZE tower: visit", 2);
+    REQUIRE_FALSE(pushes.empty());
+    for (const std::vector<double> &visit : pushes) {
+        REQUIRE(visit.size() == 2);
+        CHECK_THAT(visit[1], WithinAbs(ooze_retraction + 1.5, 1e-4));
+    }
+}
+
+TEST_CASE("Without the ooze tower option, travels go straight", "[OozeStop][OozeTower]")
+{
+    const std::string gcode = slice_two_cubes_with_ooze_tower(false);
+    CHECK(gcode.find("; OOZE tower") == std::string::npos);
+    CHECK(gcode.find("; FEATURE: Prime tower") == std::string::npos);
 }

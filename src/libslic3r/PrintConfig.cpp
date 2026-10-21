@@ -8770,6 +8770,77 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(60.));
 
+    // OrcaGarageBuild: ooze tower (GCode/OozeTower.hpp).
+    def = this->add("ooze_tower", coBool);
+    def->label = L("Ooze tower");
+    def->tooltip = L("Print a hollow tower next to the part and go through it on long travels, so what the nozzle oozes "
+                     "while it travels ends up on the tower instead of the part. A travel goes through the tower when it "
+                     "takes longer than the travel time below and leaves the inside of the part, and when the tower is "
+                     "close enough to where the nozzle is going. Each visit prints one loop of the tower, which wipes "
+                     "the nozzle and builds its pressure back up; the loops a layer has left are printed at the end of "
+                     "the layer, so the tower grows with the part.");
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("ooze_tower_x", coFloat);
+    def->label = L("X");
+    def->tooltip = L("X position of the centre of the ooze tower.");
+    def->sidetext = L("mm");
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(30.));
+
+    def = this->add("ooze_tower_y", coFloat);
+    def->label = L("Y");
+    def->tooltip = L("Y position of the centre of the ooze tower.");
+    def->sidetext = L("mm");
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(220.));
+
+    def = this->add("ooze_tower_diameter", coFloat);
+    def->label = L("Diameter");
+    def->tooltip = L("Outer diameter of the walls of the ooze tower, and of the towers that ooze test objects with T in "
+                     "their name get. The walls are 1.05 nozzle diameters wide, and the hollow inside them is where the "
+                     "nozzle waits during an ooze test.");
+    def->sidetext = L("mm");
+    def->min = 5.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(25.));
+
+    def = this->add("ooze_tower_walls", coInt);
+    def->label = L("Walls");
+    def->tooltip = L("Number of walls of the ooze tower. Each visit prints one of them.");
+    def->min = 1;
+    def->max = 10;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionInt(3));
+
+    def = this->add("ooze_tower_brim_loops", coInt);
+    def->label = L("Brim loops");
+    def->tooltip = L("Loops printed around the first layer of the ooze tower, so it stays on the bed when the nozzle "
+                     "drags ooze across it.");
+    def->min = 0;
+    def->max = 20;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionInt(2));
+
+    def = this->add("ooze_tower_travel_time", coFloat);
+    def->label = L("Travel time");
+    def->tooltip = L("Travels that take longer than this, at the travel speed, and leave the inside of the part go "
+                     "through the ooze tower. The ooze ladder in Hover mode shows how long the nozzle can travel before "
+                     "its restart suffers.");
+    def->sidetext = L("s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(5.));
+
+    def = this->add("ooze_tower_reprime", coFloat);
+    def->label = L("Reprime after the tower");
+    def->tooltip = L("Extra length of filament pushed in when printing restarts after a visit to the ooze tower, in "
+                     "place of the extra length on restart. The ooze ladder with towers shows the right value.");
+    def->sidetext = L("mm");
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
     def = this->add("wipe_tower_rotation_angle", coFloat);
     def->label = L("Wipe tower rotation angle");
     def->tooltip = L("Wipe tower rotation angle with respect to X axis.");

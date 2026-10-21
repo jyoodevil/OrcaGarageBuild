@@ -12,11 +12,11 @@ namespace Slic3r {
 // Ooze & reprime test objects (OrcaGarageBuild).
 //
 // An object whose name starts with the word "ooze" gets a timed stop before it starts
-// printing on every layer: the nozzle retracts, waits (parked over the purge chute, or
-// hovering just above the restart point) and restarts with a chosen extra length of
-// filament in place of retract_restart_extra. Printing the same stop with different
-// extra lengths shows how much material a large nozzle loses while it waits, which is
-// the reprime a real print needs after a stop of that length.
+// printing on every layer: the nozzle retracts, waits (over its own ooze tower, parked over
+// the purge chute, or hovering just above the restart point) and restarts with a chosen
+// extra length of filament in place of retract_restart_extra. Printing the same stop with
+// different extra lengths shows how much material a large nozzle loses while it waits,
+// which is the reprime a real print needs after a stop of that length.
 //
 // The settings live in the object name so they survive saving the project and can be
 // typed onto any object. Tokens are case-insensitive and separated by spaces or
@@ -24,19 +24,27 @@ namespace Slic3r {
 //   W<s>              wait time in seconds (required)
 //   R<mm>             extra filament pushed on restart, mm of filament (default 0)
 //   R<mm>+<step>/<n>  the same, raised by <step> every <n> layers of the object
-//   C<deg>            cool the nozzle by <deg> while parked (default 20 parked, 0 hovering)
-//   H                 hover above the restart point instead of parking
-//   P                 purge R into the chute, then restart with the normal extra length
-// Examples: "ooze W30 R1.2", "ooze W20 R0+0.5/3", "ooze W60 R1 C0 H".
+//   C<deg>            cool the nozzle by <deg> while waiting (default 20 parked or over a
+//                     tower, 0 hovering)
+//   D<mm>             retract this much further while waiting, pushed back on restart
+//   T                 wait over an ooze tower behind the object and print the tower's layer
+//                     before restarting (see OozeTower.hpp)
+//   H                 hover above the restart point instead
+//   P                 purge R into the chute or the tower, then restart with the normal
+//                     extra length
+// Without T or H the nozzle parks over the purge chute of a Bambu Lab X1 or P1.
+// Examples: "ooze W30 R1.2 T", "ooze W20 R0+0.5/3 C40 D2 T", "ooze W60 R1 C0 H".
 struct OozeStopSpec
 {
-    double wait_s       = 0.;
-    double reprime      = 0.;
-    double reprime_step = 0.;
-    int    step_layers  = 0;  // 0: no ramp
-    int    cool         = -1; // -1: default for the stop type
-    bool   hover        = false;
-    bool   purge        = false;
+    double wait_s        = 0.;
+    double reprime       = 0.;
+    double reprime_step  = 0.;
+    int    step_layers   = 0;  // 0: no ramp
+    int    cool          = -1; // -1: default for the stop type
+    double extra_retract = 0.;
+    bool   tower         = false;
+    bool   hover         = false;
+    bool   purge         = false;
 
     // Extra length for a 0-based layer of the object.
     double reprime_at_layer(int object_layer) const;
@@ -85,18 +93,28 @@ std::string ooze_dwell_gcode(double seconds, bool bambu_firmware);
 //   refills what the nozzle lost during that wait (a gap: too little; a blob: too much).
 // Reprime check: one row of taller cylinders, all with the same wait, around one reprime
 //   length, to confirm a value from the ladder over many layers.
+enum class OozeStopKind
+{
+    Tower, // wait over an ooze tower behind each cylinder
+    Chute, // park over the purge chute
+    Hover, // hover over the part, as during a long travel
+};
+
 struct OozeCalibParams
 {
     bool                ladder        = true;
-    bool                hover         = false; // hover over the part instead of parking at the chute
-    bool                purge         = false; // reprime check only: purge into the chute, restart normally
-    int                 cool          = 20;    // degrees to cool by while parked
+    OozeStopKind        stop          = OozeStopKind::Tower;
+    bool                purge         = false; // reprime check only: purge into the chute or tower, restart normally
+    int                 cool          = 40;    // degrees to cool by while waiting over a tower or the chute
+    double              extra_retract = 2.;    // retracted further while waiting
+    // Diameter of each tower's footprint, brim included; needed for Tower stops.
+    double              tower_footprint = 0.;
     // Ooze ladder
-    std::vector<double> waits         {5., 10., 20., 40., 80.};
+    std::vector<double> waits         {10., 30., 90.};
     double              reprime_start = 0.;
     double              reprime_step  = 0.5;
-    int                 reprime_count = 7;
-    int                 ladder_layers = 2;
+    int                 reprime_count = 6;
+    int                 ladder_layers = 4;
     // Reprime check
     double              wait          = 30.;
     double              reprime_mid   = 1.;
@@ -116,6 +134,7 @@ struct OozeCalibLayout
     std::vector<OozeCalibObject> objects;
     double diameter   = 0.; // cylinder diameter
     double brim       = 0.; // brim width around each cylinder
+    double tower_dy   = 0.; // distance from a cylinder's centre to its tower's, 0 without towers
     int    layers     = 0;
     int    stops      = 0;  // stops in the whole print
     double wait_total = 0.; // seconds spent waiting

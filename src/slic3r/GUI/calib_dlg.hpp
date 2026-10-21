@@ -149,6 +149,7 @@ protected:
     RadioGroup*      m_rbTest;
     RadioGroup*      m_rbStop;
     TextInput*       m_tiCool;
+    TextInput*       m_tiExtraRetract;
     TextInput*       m_tiWaits;
     TextInput*       m_tiReprimeStart;
     TextInput*       m_tiReprimeStep;

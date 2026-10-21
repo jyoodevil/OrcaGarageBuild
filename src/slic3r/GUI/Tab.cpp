@@ -3304,6 +3304,17 @@ void TabPrint::build()
         optgroup->append_single_option_line("brim_ears_detection_length", "others_settings_brim#ear-detection-radius");
         optgroup->append_single_option_line("brim_ears_outer_only", "others_settings_brim#brim-ears-outer-only");
 
+        // OrcaGarageBuild
+        optgroup = page->new_optgroup(L("Ooze tower"), L"param_tower");
+        optgroup->append_single_option_line("ooze_tower");
+        optgroup->append_single_option_line("ooze_tower_x");
+        optgroup->append_single_option_line("ooze_tower_y");
+        optgroup->append_single_option_line("ooze_tower_diameter");
+        optgroup->append_single_option_line("ooze_tower_walls");
+        optgroup->append_single_option_line("ooze_tower_brim_loops");
+        optgroup->append_single_option_line("ooze_tower_travel_time");
+        optgroup->append_single_option_line("ooze_tower_reprime");
+
         optgroup = page->new_optgroup(L("Special mode"), L"param_special");
         optgroup->append_single_option_line("slicing_mode", "others_settings_special_mode#slicing-mode");
         optgroup->append_single_option_line("print_sequence", "others_settings_special_mode#print-sequence");

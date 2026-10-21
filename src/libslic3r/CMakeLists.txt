@@ -263,6 +263,8 @@ set(lisbslic3r_sources
     GCode/CoolingBuffer.cpp
     GCode/OozeStop.cpp
     GCode/OozeStop.hpp
+    GCode/OozeTower.cpp
+    GCode/OozeTower.hpp
     ReportedNozzle.cpp
     ReportedNozzle.hpp
     GCode/CoolingBuffer.hpp

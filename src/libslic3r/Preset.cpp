@@ -1349,6 +1349,8 @@ static std::vector<std::string> s_Preset_print_options{
     "prime_tower_width",
     "prime_tower_brim_width",
     "prime_tower_skip_points",
+    "ooze_tower", "ooze_tower_x", "ooze_tower_y", "ooze_tower_diameter", "ooze_tower_walls", "ooze_tower_brim_loops",
+    "ooze_tower_travel_time", "ooze_tower_reprime",
     "prime_volume",
     "prime_tower_infill_gap",
     "prime_tower_flat_ironing",

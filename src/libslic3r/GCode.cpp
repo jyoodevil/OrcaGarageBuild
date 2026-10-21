@@ -3307,23 +3307,10 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     const bool skip_config_block = print.config().gcode_skip_config_block;
     const WipeTowerType wipe_tower_type = print.wipe_tower_type();
     m_calib_config.clear();
-    // OrcaGarageBuild: objects named "ooze ..." stop and wait before every layer (GCode/OozeStop.hpp).
-    m_ooze_specs.clear();
-    m_ooze_pending.reset();
-    m_ooze_hover.reset();
-    m_ooze_restart_extra.reset();
-    m_ooze_last_stop = {nullptr, 0, -1};
+    // OrcaGarageBuild: objects named "ooze ..." stop and wait before every layer (GCode/OozeStop.hpp),
+    // and long travels may go through an ooze tower (GCode/OozeTower.hpp).
     m_ooze_has_chute = is_bbl_printers && printer_has_bambu_purge_chute(print.config().printer_model.value);
-    for (const PrintObject *object : print.objects()) {
-        std::optional<OozeStopSpec> spec = parse_ooze_object_name(object->model_object()->name);
-        if (!spec)
-            continue;
-        if (!spec->hover && !m_ooze_has_chute)
-            throw Slic3r::SlicingError(format(_u8L("Object \"%1%\" parks over the purge chute, which only Bambu Lab X1 and P1 "
-                                                   "printers have. Add H to its name to hover over the part instead."),
-                                              object->model_object()->name));
-        m_ooze_specs.emplace(object, *spec);
-    }
+    this->ooze_setup(print);
     // Orca: Calibration overrides are reapplied after object/region settings in _extrude().
     // Keep inward wiping from masking retraction and pressure advance artifacts.
     switch (print.calib_mode()) {
@@ -6650,6 +6637,7 @@ LayerResult GCode::process_layer(
 
     // BBS: don't use lazy_raise when enable spiral vase
     gcode += this->change_layer(print_z);  // this will increase m_layer_index
+    m_ooze_tower_layer_z = print_z;
     update_layer_related_config(m_layer_index);
     update_placeholder_parser_with_variant_params();
     m_layer = &layer;
@@ -8128,6 +8116,13 @@ LayerResult GCode::process_layer(
             }
         }
         this->set_origin(saved_origin);
+    }
+
+    // OrcaGarageBuild: print the loops of the ooze tower this layer's travels left, so it keeps up with the print.
+    if (m_ooze_tower && m_last_pos_defined && m_writer.filament() != nullptr) {
+        m_ooze_tower->start_layer(print_z);
+        if (m_ooze_tower->loops_left() > 0)
+            gcode += this->ooze_tower_visit(this->last_pos(), erMixed, true);
     }
 
     if (first_layer) {
@@ -10430,6 +10425,12 @@ std::string GCode::_encode_label_ids_to_base64(std::vector<size_t> ids)
 // This method accepts &point in print coordinates.
 std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string comment, double z/* = DBL_MAX*/)
 {
+    // OrcaGarageBuild: a long travel over the outside of the part goes through the ooze tower first, and
+    // carries on from there.
+    std::string gcode;
+    if (this->ooze_tower_wanted(point, role))
+        gcode = this->ooze_tower_visit(point, role, false);
+
     /*  Define the travel move as a line between current position and the taget point.
         This is expressed in print coordinates, so it will need to be translated by
         this->origin in order to get G-code coordinates.  */
@@ -10442,7 +10443,6 @@ std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string
     bool could_be_wipe_disabled       = false;
     // Save state of use_external_mp_once for the case that will be needed to call twice m_avoid_crossing_perimeters.travel_to.
     const bool used_external_mp_once  = m_avoid_crossing_perimeters.used_external_mp_once();
-    std::string gcode;
 
     // Orca: we don't need to optimize the Klipper as only set once
     double jerk_to_set = 0.0;
@@ -10814,7 +10814,7 @@ void GCode::ooze_start_object(const PrintObject &object, size_t instance_id, con
     if (key == m_ooze_last_stop)
         return;
     m_ooze_last_stop = key;
-    m_ooze_pending   = OozeStop{it->second, object.model_object()->name, layer, it->second.reprime_at_layer(layer)};
+    m_ooze_pending   = OozeStop{it->second, object.model_object()->name, layer, it->second.reprime_at_layer(layer), &object, instance_id};
 }
 
 static int ooze_layer_temperature(const PrintConfig &config, const Layer *layer, size_t filament_index)
@@ -10823,6 +10823,171 @@ static int ooze_layer_temperature(const PrintConfig &config, const Layer *layer,
     return (layer == nullptr || layer->id() == 0 || config.nozzle_temperature.get_at(filament_index) == 0)
         ? config.nozzle_temperature_initial_layer.get_at(filament_index)
         : config.nozzle_temperature.get_at(filament_index);
+}
+
+// Reads the stops of the ooze test objects, places their towers and the print's ooze tower, and
+// checks that every tower is on the bed and clear of the objects and of the other towers.
+void GCode::ooze_setup(const Print &print)
+{
+    m_ooze_specs.clear();
+    m_ooze_pending.reset();
+    m_ooze_hover.reset();
+    m_ooze_restart_extra.reset();
+    m_ooze_last_stop = {nullptr, 0, -1};
+    m_ooze_object_towers.clear();
+    m_ooze_tower.reset();
+    m_ooze_tower_busy = false;
+
+    const PrintConfig &config = print.config();
+    const double       nozzle = config.nozzle_diameter.get_at(0);
+    const auto shape_for = [&config, nozzle](double layer_height) {
+        return make_ooze_tower_shape(config.ooze_tower_diameter.value, config.ooze_tower_walls.value,
+                                     config.ooze_tower_brim_loops.value, nozzle, layer_height);
+    };
+    const std::string too_small = _u8L("The ooze tower is too small for its walls. Make it wider or give it fewer walls.");
+
+    // Every tower's footprint, for the checks below.
+    struct Footprint
+    {
+        Vec2d       center;
+        double      radius;
+        std::string owner; // object name, empty for the print's tower
+    };
+    std::vector<Footprint> footprints;
+    // Bed area of an object copy, its brim included.
+    const auto object_box = [](const PrintObject &object, size_t instance, Vec2d &min, Vec2d &max) {
+        const double brim   = object.config().brim_type.value == btNoBrim ? 0. : object.config().brim_width.value;
+        const Vec2d  center = unscale(object.instances()[instance].shift);
+        const Vec2d  half   = 0.5 * Vec2d(unscale_(object.size().x()), unscale_(object.size().y())) + Vec2d(brim, brim);
+        min                 = center - half;
+        max                 = center + half;
+    };
+
+    for (const PrintObject *object : print.objects()) {
+        std::optional<OozeStopSpec> spec = parse_ooze_object_name(object->model_object()->name);
+        if (!spec)
+            continue;
+        const std::string &name = object->model_object()->name;
+        if (!spec->hover && !spec->tower && !m_ooze_has_chute)
+            throw Slic3r::SlicingError(format(_u8L("Object \"%1%\" parks over the purge chute, which only Bambu Lab X1 and P1 "
+                                                   "printers have. Add T to its name to wait over an ooze tower, or H to hover "
+                                                   "over the part instead."),
+                                              name));
+        if (spec->tower) {
+            if (object->slicing_parameters().raft_layers() > 0)
+                throw Slic3r::SlicingError(format(_u8L("Object \"%1%\" waits over an ooze tower, which starts on the bed, so the "
+                                                       "object cannot have a raft."),
+                                                  name));
+            const OozeTowerShape shape = shape_for(object->config().layer_height.value);
+            if (shape.walls == 0)
+                throw Slic3r::SlicingError(too_small);
+            // The tower stands right behind the object, clear of its brim.
+            for (size_t i = 0; i < object->instances().size(); ++i) {
+                Vec2d min, max;
+                object_box(*object, i, min, max);
+                const Vec2d center(0.5 * (min.x() + max.x()), max.y() + ooze_tower_clearance + shape.footprint_radius());
+                m_ooze_object_towers.emplace(std::make_pair(object, i), OozeTower(center, shape));
+                footprints.push_back({center, shape.footprint_radius(), name});
+            }
+        }
+        m_ooze_specs.emplace(object, *spec);
+    }
+
+    if (config.ooze_tower.value) {
+        if (config.print_sequence.value == PrintSequence::ByObject)
+            throw Slic3r::SlicingError(_u8L("The ooze tower grows with the whole print, so it cannot be used when printing "
+                                            "object by object."));
+        if (config.spiral_mode.value)
+            throw Slic3r::SlicingError(_u8L("The ooze tower cannot be used in spiral vase mode."));
+        const OozeTowerShape shape = shape_for(print.default_object_config().layer_height.value);
+        if (shape.walls == 0)
+            throw Slic3r::SlicingError(too_small);
+        const Vec3d plate_origin = print.get_plate_origin();
+        const Vec2d center(config.ooze_tower_x.value + plate_origin.x(), config.ooze_tower_y.value + plate_origin.y());
+        m_ooze_tower.emplace(center, shape);
+        footprints.push_back({center, shape.footprint_radius(), std::string()});
+    }
+
+    if (footprints.empty())
+        return;
+    const auto describe = [](const Footprint &tower) {
+        return tower.owner.empty() ? _u8L("The ooze tower") : format(_u8L("The ooze tower of \"%1%\""), tower.owner);
+    };
+    const Vec3d  plate_origin = print.get_plate_origin();
+    BoundingBoxf bed;
+    for (const Vec2d &corner : config.printable_area.values)
+        bed.merge(corner + Vec2d(plate_origin.x(), plate_origin.y()));
+    for (size_t i = 0; i < footprints.size(); ++i) {
+        const Footprint &tower = footprints[i];
+        if (bed.defined && (tower.center.x() - tower.radius < bed.min.x() - EPSILON || tower.center.x() + tower.radius > bed.max.x() + EPSILON ||
+                            tower.center.y() - tower.radius < bed.min.y() - EPSILON || tower.center.y() + tower.radius > bed.max.y() + EPSILON))
+            // TRN: %1% is "The ooze tower" or "The ooze tower of "<object name>"".
+            throw Slic3r::SlicingError(format(_u8L("%1% is off the bed. Move it, or the object it stands behind, further in."),
+                                              describe(tower)));
+        for (const PrintObject *object : print.objects())
+            for (size_t j = 0; j < object->instances().size(); ++j) {
+                Vec2d min, max;
+                object_box(*object, j, min, max);
+                if (ooze_distance_to_box(tower.center, min, max) < tower.radius - EPSILON)
+                    // TRN: %1% is "The ooze tower" or "The ooze tower of "<object name>"", %2% another object's name.
+                    throw Slic3r::SlicingError(format(_u8L("%1% overlaps \"%2%\". Move them apart."), describe(tower),
+                                                      object->model_object()->name));
+            }
+        for (size_t j = i + 1; j < footprints.size(); ++j)
+            if ((tower.center - footprints[j].center).norm() < tower.radius + footprints[j].radius - EPSILON)
+                // TRN: %1% and %2% are "The ooze tower" or "The ooze tower of "<object name>"".
+                throw Slic3r::SlicingError(format(_u8L("%1% overlaps another ooze tower: %2%. Move them apart."), describe(tower),
+                                                  describe(footprints[j])));
+    }
+}
+
+Vec2d GCode::ooze_to_writer(const Vec2d &print_xy) const
+{
+    return print_xy - EXTRUDER_CONFIG(extruder_offset);
+}
+
+// Trips to the chute or a tower are not part of the wait being measured, so they run at up to 250 mm/s and
+// 5000 mm/s^2 within the machine limits, whatever slow travel the profile uses. Acceleration is only
+// touched when the profile controls it, because then the extrusion that follows sets it again.
+std::string GCode::ooze_fast_moves(double &speed)
+{
+    speed = 250.;
+    for (double limit : {m_config.machine_max_speed_x.get_at(0), m_config.machine_max_speed_y.get_at(0)})
+        if (limit > 0.)
+            speed = std::min(speed, limit);
+    double accel = 5000.;
+    if (m_config.machine_max_acceleration_travel.get_at(0) > 0.)
+        accel = std::min(accel, m_config.machine_max_acceleration_travel.get_at(0));
+    if (NOZZLE_CONFIG(default_acceleration) > 0)
+        return m_writer.set_travel_acceleration((unsigned int) std::lround(accel));
+    return {};
+}
+
+// Retracts further while the nozzle waits; the restart pushes it all back.
+std::string GCode::ooze_extra_retract(const OozeStopSpec &spec)
+{
+    if (!(spec.extra_retract > 0.) || m_config.use_firmware_retraction.value)
+        return {};
+    return m_writer.retract(false, m_writer.filament()->retraction_length() + spec.extra_retract);
+}
+
+// Pushes the retraction back plus length, slowly enough for the hot end to melt it, and retracts again.
+std::string GCode::ooze_purge(double length, const std::string &comment)
+{
+    Extruder    *extruder = m_writer.filament();
+    const size_t fi       = get_filament_config_index((int) extruder->id());
+    const double diameter = m_config.filament_diameter.get_at(fi);
+    const double area     = PI * diameter * diameter / 4.;
+    const double max_flow = m_config.filament_max_volumetric_speed.get_at(fi);
+    double       speed    = (max_flow > 0. && area > 0.) ? 0.5 * max_flow / area : 2.;
+    speed                 = std::clamp(speed, 0.5, std::max(0.5, double(extruder->deretract_speed())));
+    extruder->retract(0., length);
+    extruder->unretract();
+    GCodeG1Formatter w;
+    w.emit_e(extruder->E());
+    w.emit_f(speed * 60.);
+    w.emit_comment(true, comment);
+    return w.string() + m_writer.retract();
 }
 
 // Park over the purge chute: retract, lift clear of everything printed so far, wait (optionally cooler),
@@ -10836,6 +11001,8 @@ std::string GCode::ooze_park(const Point &restart_point)
         m_ooze_hover = stop;
         return {};
     }
+    if (stop.spec.tower)
+        return this->ooze_tower_stop(stop, restart_point);
 
     const bool   purge  = stop.spec.purge && stop.reprime > 0. && !m_config.use_firmware_retraction.value;
     const size_t fi     = get_filament_config_index((int) m_writer.filament()->id());
@@ -10857,18 +11024,8 @@ std::string GCode::ooze_park(const Point &restart_point)
     if (m_config.printable_height.value > 0.)
         safe_z = std::min(safe_z, m_config.printable_height.value);
     gcode += m_writer.travel_to_z(safe_z, "ooze: lift clear of the print", true);
-    // The trip to the chute is not part of the wait being measured, so it runs at up to 250 mm/s and
-    // 5000 mm/s^2 within the machine limits, whatever slow travel the profile uses. Acceleration is only
-    // touched when the profile controls it, because then the extrusion that follows sets it again.
-    double park_speed = 250.;
-    for (double limit : {m_config.machine_max_speed_x.get_at(0), m_config.machine_max_speed_y.get_at(0)})
-        if (limit > 0.)
-            park_speed = std::min(park_speed, limit);
-    double park_accel = 5000.;
-    if (m_config.machine_max_acceleration_travel.get_at(0) > 0.)
-        park_accel = std::min(park_accel, m_config.machine_max_acceleration_travel.get_at(0));
-    if (NOZZLE_CONFIG(default_acceleration) > 0)
-        gcode += m_writer.set_travel_acceleration((unsigned int) std::lround(park_accel));
+    double park_speed = 0.;
+    gcode += this->ooze_fast_moves(park_speed);
 
     // The writer takes plate coordinates; the chute is at fixed machine coordinates.
     const Vec2f  plate = m_writer.get_xy_offset();
@@ -10876,29 +11033,14 @@ std::string GCode::ooze_park(const Point &restart_point)
     const auto  &chute = bambu_purge_chute;
     gcode += m_writer.travel_to_xy(at(chute.x, chute.approach_y), park_speed, "ooze: to the purge chute");
     gcode += m_writer.travel_to_xy(at(chute.x, chute.y), 50., "");
+    gcode += this->ooze_extra_retract(stop.spec);
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) (temp - cool), false);
     gcode += ooze_dwell_gcode(stop.spec.wait_s, m_ooze_has_chute);
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) temp, true);
-
-    if (purge) {
-        // Push the retraction back plus the reprime amount, slowly enough for the hot end to melt it.
-        Extruder    *extruder = m_writer.filament();
-        const double diameter = m_config.filament_diameter.get_at(fi);
-        const double area     = PI * diameter * diameter / 4.;
-        const double max_flow = m_config.filament_max_volumetric_speed.get_at(fi);
-        double       speed    = (max_flow > 0. && area > 0.) ? 0.5 * max_flow / area : 2.;
-        speed                 = std::clamp(speed, 0.5, std::max(0.5, double(extruder->deretract_speed())));
-        extruder->retract(0., stop.reprime);
-        extruder->unretract();
-        GCodeG1Formatter w;
-        w.emit_e(extruder->E());
-        w.emit_f(speed * 60.);
-        w.emit_comment(true, "ooze: purge into the chute");
-        gcode += w.string();
-        gcode += m_writer.retract();
-    }
+    if (purge)
+        gcode += this->ooze_purge(stop.reprime, "ooze: purge into the chute");
 
     for (const OozeWipeMove &move : bambu_wipe_moves)
         gcode += m_writer.travel_to_xy(at(move.x, chute.y), move.feedrate / 60., "");
@@ -10912,6 +11054,203 @@ std::string GCode::ooze_park(const Point &restart_point)
     // A purge leaves the normal restart; otherwise the test's extra length replaces it.
     if (!purge)
         m_ooze_restart_extra = stop.reprime;
+    return gcode;
+}
+
+// Wait over the object's ooze tower: retract, lift, wait over the tower's hollow so the drips fall
+// inside it (optionally cooler), then print the tower's layer, which wipes the nozzle and builds its
+// pressure back up, and come back down at the restart point.
+std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_point)
+{
+    auto it = m_ooze_object_towers.find(std::make_pair(stop.object, stop.instance));
+    if (it == m_ooze_object_towers.end())
+        return {};
+    OozeTower &tower = it->second;
+    tower.start_layer(m_layer != nullptr ? m_layer->print_z : m_nominal_z);
+
+    const bool   purge  = stop.spec.purge && stop.reprime > 0. && !m_config.use_firmware_retraction.value;
+    const size_t fi     = get_filament_config_index((int) m_writer.filament()->id());
+    const int    temp   = ooze_layer_temperature(m_config, m_layer, fi);
+    const int    cool   = stop.spec.cool_deg();
+    const bool   cooled = cool > 0 && temp > cool;
+
+    std::string gcode;
+    // Open this object's exclude-object block first, so skipping the object skips its stops and tower too.
+    m_writer.add_object_change_labels(gcode);
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | tower %g s | %s %.3f mm\n", stop.name.c_str(), stop.layer + 1,
+                  stop.spec.wait_s, purge ? "purge" : "reprime", stop.reprime);
+    gcode += buf;
+    gcode += m_writer.retract();
+
+    const double restart_z = m_nominal_z;
+    double       lift      = 1.;
+    for (double z_hop : m_config.z_hop.values)
+        lift = std::max(lift, z_hop);
+    double safe_z = std::max({double(m_max_layer_z), restart_z, m_writer.get_position().z()}) + lift;
+    if (m_config.printable_height.value > 0.)
+        safe_z = std::min(safe_z, m_config.printable_height.value);
+    gcode += m_writer.travel_to_z(safe_z, "ooze: lift clear of the print", true);
+    double speed = 0.;
+    gcode += this->ooze_fast_moves(speed);
+    gcode += m_writer.travel_to_xy(this->ooze_to_writer(tower.center()), speed, "ooze: to the ooze tower");
+    // Wait over the hollow, a little above the top of the tower.
+    const double top = restart_z - tower.layer_height();
+    gcode += m_writer.travel_to_z(top + ooze_tower_hover_height, "ooze: over the tower's hollow", true);
+    gcode += this->ooze_extra_retract(stop.spec);
+    if (cooled)
+        gcode += m_writer.set_temperature((unsigned int) (temp - cool), false);
+    gcode += ooze_dwell_gcode(stop.spec.wait_s, m_ooze_has_chute || this->is_BBL_Printer());
+    // The tower is printed at full temperature, so it bonds and the nozzle cannot knock it loose.
+    if (cooled)
+        gcode += m_writer.set_temperature((unsigned int) temp, true);
+    if (purge)
+        gcode += this->ooze_purge(stop.reprime, "ooze: purge into the tower");
+
+    // Print the tower's layer, from the loop next to the hollow outwards, starting on the side that faces
+    // the object; what still hangs from the nozzle goes into the first loop.
+    const Vec2d  object_center = unscale(stop.object->instances()[stop.instance].shift);
+    const double angle = std::atan2(object_center.y() - tower.center().y(), object_center.x() - tower.center().x());
+    gcode += m_writer.travel_to_z(restart_z, "ooze: down into the tower", true);
+    gcode += this->ooze_tower_loops(tower, tower.loops_left(), angle);
+    gcode += m_writer.retract();
+    gcode += this->ooze_tower_wipe(tower);
+
+    gcode += m_writer.travel_to_z(safe_z, "ooze: lift clear of the print", true);
+    gcode += m_writer.travel_to_xy(this->point_to_gcode(restart_point), speed, "ooze: back to the restart point");
+    gcode += m_writer.travel_to_z(restart_z, "ooze: down to the layer", true);
+
+    // Already at the restart point and height: _extrude() skips its own travel.
+    this->set_last_pos(restart_point);
+    m_need_change_layer_lift_z = false;
+    // A purge leaves the normal restart; otherwise the test's extra length replaces it.
+    if (!purge)
+        m_ooze_restart_extra = stop.reprime;
+    return gcode;
+}
+
+std::string GCode::ooze_tower_loops(OozeTower &tower, size_t count, double start_angle)
+{
+    const std::vector<double> radii = tower.take_loops(count);
+    if (radii.empty())
+        return {};
+    const OozeTowerShape &shape      = tower.shape();
+    const double          height     = std::max(0.05, tower.layer_height());
+    const Flow            flow(float(shape.line_width), float(height), float(EXTRUDER_CONFIG(nozzle_diameter)));
+    const double          mm3_per_mm = flow.mm3_per_mm() * m_config.print_flow_ratio.value;
+    const double          e_per_mm   = m_writer.filament()->e_per_mm3() * mm3_per_mm;
+    double                speed      = tower.first_layer() ? NOZZLE_CONFIG(initial_layer_speed) : NOZZLE_CONFIG(outer_wall_speed);
+    const double          max_flow   = FILAMENT_CONFIG(filament_max_volumetric_speed);
+    if (max_flow > 0. && mm3_per_mm > 0.)
+        speed = std::min(speed, max_flow / mm3_per_mm);
+    if (!(speed > 0.))
+        speed = 10.;
+
+    std::string gcode;
+    // Tags for the preview; the next extrusion of the part writes its own again.
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), ";%s%s\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role).c_str(),
+                  ExtrusionEntity::role_to_string(erWipeTower).c_str());
+    gcode += buf;
+    std::snprintf(buf, sizeof(buf), ";%s%g\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Width).c_str(), shape.line_width);
+    gcode += buf;
+    std::snprintf(buf, sizeof(buf), ";%s%g\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height).c_str(), height);
+    gcode += buf;
+    m_last_processor_extrusion_role = erWipeTower;
+    m_last_width                    = float(shape.line_width);
+    m_last_height                   = float(height);
+    if (NOZZLE_CONFIG(default_acceleration) > 0) {
+        const double accel = NOZZLE_CONFIG(outer_wall_acceleration) > 0 ? NOZZLE_CONFIG(outer_wall_acceleration) :
+                                                                         NOZZLE_CONFIG(default_acceleration);
+        gcode += m_writer.set_print_acceleration((unsigned int) std::lround(accel));
+    }
+
+    bool first = true;
+    for (double radius : radii) {
+        const std::vector<Vec2d> loop = ooze_tower_loop(tower.center(), radius, start_angle);
+        gcode += m_writer.travel_to_xy(this->ooze_to_writer(loop.front()), "ooze tower: loop start");
+        if (first) {
+            gcode += m_writer.unretract();
+            first = false;
+        }
+        gcode += m_writer.set_speed(speed * 60.);
+        for (size_t i = 1; i < loop.size(); ++i)
+            gcode += m_writer.extrude_to_xy(this->ooze_to_writer(loop[i]), e_per_mm * (loop[i] - loop[i - 1]).norm());
+    }
+    // The part's last path is no use for a wipe here.
+    m_wipe.reset_path();
+    return gcode;
+}
+
+std::string GCode::ooze_tower_wipe(const OozeTower &tower)
+{
+    // Carry on along the loop under the nozzle for 30 degrees, over what was just printed.
+    const Vec2d  center = this->ooze_to_writer(tower.center());
+    const Vec2d  from   = to_2d(m_writer.get_position()) - center;
+    const double radius = from.norm();
+    if (radius < EPSILON)
+        return {};
+    const double angle = std::atan2(from.y(), from.x());
+    std::string  gcode;
+    for (int i = 1; i <= 4; ++i) {
+        const double a = angle + i * PI / 24.;
+        gcode += m_writer.travel_to_xy(center + radius * Vec2d(std::cos(a), std::sin(a)), i == 1 ? "ooze tower: wipe" : "");
+    }
+    return gcode;
+}
+
+// A travel goes through the print's ooze tower when it takes longer than ooze_tower_travel_time, leaves
+// the inside of the part (where its strings would show) and ends close enough to the tower that the trip
+// from the tower is short.
+bool GCode::ooze_tower_wanted(const Point &point, ExtrusionRole role)
+{
+    if (!m_ooze_tower || m_ooze_tower_busy || m_layer == nullptr || !m_last_pos_defined || m_writer.filament() == nullptr)
+        return false;
+    if (role == erWipeTower || role == erMixed || role == erCustom || role == erNone)
+        return false;
+    const size_t nozzle = get_nozzle_config_index(m_writer.filament()->id());
+    const double speed  = this->on_first_layer() ? m_config.get_abs_value_at("initial_layer_travel_speed", nozzle) :
+                                                   m_config.travel_speed.get_at(nozzle);
+    const double limit  = m_config.ooze_tower_travel_time.value;
+    if (!(speed > 0.))
+        return false;
+    const Vec2d      from  = unscale(this->last_pos()) + m_origin;
+    const Vec2d      to    = unscale(point) + m_origin;
+    const OozeTower &tower = *m_ooze_tower;
+    if ((to - from).norm() / speed <= limit)
+        return false;
+    if ((from - tower.center()).norm() <= tower.shape().footprint_radius() + EPSILON)
+        return false;
+    if (std::max(0., (to - tower.center()).norm() - tower.shape().outer_radius()) / speed >= limit)
+        return false;
+    // Strings inside the part's infill do not show.
+    return !m_retract_when_crossing_perimeters.travel_inside_internal_regions(*m_layer, Polyline{this->last_pos(), point});
+}
+
+std::string GCode::ooze_tower_visit(const Point &point, ExtrusionRole role, bool rest_of_layer)
+{
+    OozeTower &tower = *m_ooze_tower;
+    tower.start_layer(m_ooze_tower_layer_z);
+    m_ooze_tower_busy = true;
+
+    // Enter and leave the tower on the side facing where the nozzle goes next.
+    const Vec2d  dest  = unscale(point) + m_origin;
+    const double angle = std::atan2(dest.y() - tower.center().y(), dest.x() - tower.center().x());
+    const Vec2d  entry = tower.center() + tower.next_loop_radius() * Vec2d(std::cos(angle), std::sin(angle));
+    std::string  gcode = rest_of_layer ? "; OOZE tower: rest of the layer\n" : "; OOZE tower: visit\n";
+    gcode += this->travel_to(this->gcode_to_point(this->ooze_to_writer(entry)), role, "ooze tower: to the tower");
+    gcode += m_writer.unlift();
+    gcode += this->ooze_tower_loops(tower, rest_of_layer ? tower.loops_left() : 1, angle);
+    // With no loops left on this layer, the visit only wipes.
+    gcode += m_writer.retract();
+    gcode += this->ooze_tower_wipe(tower);
+    this->set_last_pos(this->gcode_to_point(to_2d(m_writer.get_position())));
+    m_wipe.reset_path();
+    // Already retracted: this only lifts for the trip back to the part.
+    gcode += this->retract(false, false, LiftType::NormalLift);
+    if (!rest_of_layer)
+        m_ooze_restart_extra = m_config.ooze_tower_reprime.value;
+    m_ooze_tower_busy = false;
     return gcode;
 }
 
@@ -10934,6 +11273,7 @@ std::string GCode::ooze_hover()
     gcode += m_writer.retract();
     const double z = m_writer.get_position().z();
     gcode += m_writer.travel_to_z(z + std::max(1., double(m_layer ? m_layer->height : 0.)), "ooze: hover", true);
+    gcode += this->ooze_extra_retract(stop.spec);
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) (temp - cool), false);
     gcode += ooze_dwell_gcode(stop.spec.wait_s, m_ooze_has_chute || this->is_BBL_Printer());

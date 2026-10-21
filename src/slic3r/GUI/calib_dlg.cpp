@@ -1908,7 +1908,8 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     test_box->Add(m_rbTest, 0, wxALL | wxEXPAND, FromDIP(4));
     v_sizer->Add(test_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
-    const wxString cool_str          = _L("Cool while parked: ");
+    const wxString cool_str          = _L("Cool while waiting: ");
+    const wxString retract_str       = _L("Retract further while waiting: ");
     const wxString waits_str         = _L("Wait times: ");
     const wxString reprime_start_str = _L("First reprime length: ");
     const wxString reprime_step_str  = _L("Reprime step: ");
@@ -1917,8 +1918,8 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     const wxString wait_str          = _L("Wait time: ");
     const wxString reprime_mid_str   = _L("Middle reprime length: ");
     const wxString boxes_str         = _L("Cylinders: ");
-    const int      text_max          = GetTextMax(this, {cool_str, waits_str, reprime_start_str, reprime_step_str, reprime_count_str,
-                                                        layers_str, wait_str, reprime_mid_str, boxes_str});
+    const int      text_max          = GetTextMax(this, {cool_str, retract_str, waits_str, reprime_start_str, reprime_step_str,
+                                                        reprime_count_str, layers_str, wait_str, reprime_mid_str, boxes_str});
     const wxSize   st_size(text_max, -1);
     const wxSize   ti_size = FromDIP(wxSize(120, -1));
 
@@ -1939,12 +1940,24 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
 
     // Where the nozzle waits
     auto stop_box = new wxStaticBoxSizer(new LabeledStaticBox(this, _L("Stop")), wxVERTICAL);
-    m_rbStop = new RadioGroup(this, {_L("Park at the purge chute"), _L("Hover over the part")}, wxHORIZONTAL);
+    // Same order as OozeStopKind.
+    m_rbStop = new RadioGroup(this, {_L("Over an ooze tower"), _L("Park at the purge chute"), _L("Hover over the part")}, wxVERTICAL);
+    m_rbStop->SetSelection(int(m_params.stop));
     stop_box->Add(m_rbStop, 0, wxALL | wxEXPAND, FromDIP(4));
-    m_stChuteNote = new wxStaticText(this, wxID_ANY, _L("This printer has no purge chute, so the nozzle hovers over the part while it waits."));
+    auto stop_note = new wxStaticText(this, wxID_ANY,
+        _L("Over an ooze tower, each cylinder gets a tower behind it: the nozzle waits over the tower's hollow, then prints "
+           "the tower's layer, which wipes it, before it restarts. The tower's size is in the print settings, under "
+           "Others > Ooze tower. Hover over the part to see how long a travel can be before it needs the tower."));
+    stop_note->Wrap(FromDIP(420));
+    stop_box->Add(stop_note, 0, wxALL, FromDIP(4));
+    m_stChuteNote = new wxStaticText(this, wxID_ANY, _L("This printer has no purge chute to park over."));
     m_stChuteNote->Wrap(FromDIP(420));
     stop_box->Add(m_stChuteNote, 0, wxALL, FromDIP(4));
     m_tiCool = add_row(stop_box, cool_str, wxString::Format("%d", m_params.cool), _L("\u2103" /* °C */), number_validator);
+    m_tiExtraRetract = add_row(stop_box, retract_str, wxString::FromDouble(m_params.extra_retract), _L("mm"), number_validator);
+    m_tiExtraRetract->SetToolTip(_L("Filament retracted on top of the normal retraction while the nozzle waits, and pushed "
+                                    "back before it prints again. A deeper retraction oozes less, but too deep can pull "
+                                    "molten filament into the cold zone."));
     v_sizer->Add(stop_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
     // Ooze ladder
@@ -1974,15 +1987,15 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     m_cbPurge        = new CheckBox(this);
     m_cbPurge->SetValue(m_params.purge);
     purge_row->Add(m_cbPurge, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
-    purge_row->Add(new wxStaticText(this, wxID_ANY, _L("Purge the reprime length into the chute, then restart normally")), 0,
+    purge_row->Add(new wxStaticText(this, wxID_ANY, _L("Purge the reprime length into the tower or chute, then restart normally")), 0,
                    wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
     check_sizer->Add(purge_row, 0, wxLEFT | wxTOP | wxBOTTOM, FromDIP(3));
     v_sizer->Add(check_sizer, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
     auto help = new wxStaticText(this, wxID_ANY,
         _L("A reprime length is the filament pushed back in after a stop, in place of the extra length on restart. "
-           "Each cylinder's name holds its stop, for example \"ooze W30 R1.5\"; give any object a name like that "
-           "to print it with the same stops."));
+           "Each cylinder's name holds its stop, for example \"ooze W30 R1.5 C40 D2 T\"; give any object a name like "
+           "that to print it with the same stops."));
     help->Wrap(FromDIP(440));
     v_sizer->Add(help, 0, wxALL, FromDIP(10));
 
@@ -2009,19 +2022,18 @@ void Ooze_Reprime_Test_Dlg::update_controls()
     const DynamicPrintConfig& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
     const std::string         model   = printer.has("printer_model") ? printer.opt_string("printer_model") : std::string();
     m_has_chute = wxGetApp().preset_bundle->is_bbl_vendor() && printer_has_bambu_purge_chute(model);
-    if (!m_has_chute)
-        m_rbStop->SetSelection(1);
-    m_rbStop->Enable(m_has_chute);
+    if (!m_has_chute && m_rbStop->GetSelection() == int(OozeStopKind::Chute))
+        m_rbStop->SetSelection(int(OozeStopKind::Tower));
     m_stChuteNote->Show(!m_has_chute);
 
-    const bool park   = m_rbStop->GetSelection() == 0;
+    const bool hover  = m_rbStop->GetSelection() == int(OozeStopKind::Hover);
     const bool ladder = m_rbTest->GetSelection() == 0;
-    m_tiCool->Enable(park);
+    m_tiCool->Enable(!hover);
     for (TextInput* ti : {m_tiWaits, m_tiReprimeStart, m_tiReprimeStep, m_tiReprimeCount, m_tiLadderLayers})
         ti->Enable(ladder);
     for (TextInput* ti : {m_tiWait, m_tiReprimeMid, m_tiCheckStep, m_tiBoxes, m_tiCheckLayers})
         ti->Enable(!ladder);
-    m_cbPurge->Enable(!ladder && park);
+    m_cbPurge->Enable(!ladder && !hover);
     Layout();
     Fit();
 }
@@ -2042,11 +2054,13 @@ void Ooze_Reprime_Test_Dlg::on_start(wxCommandEvent& event)
 
     OozeCalibParams params = m_params;
     params.ladder = m_rbTest->GetSelection() == 0;
-    params.hover  = !m_has_chute || m_rbStop->GetSelection() == 1;
+    params.stop   = OozeStopKind(m_rbStop->GetSelection());
+    if (!m_has_chute && params.stop == OozeStopKind::Chute)
+        params.stop = OozeStopKind::Tower;
     params.purge  = m_cbPurge->GetValue();
 
     double cool = 0.;
-    bool   ok   = read(m_tiCool, cool) && cool >= 0.;
+    bool   ok   = read(m_tiCool, cool) && cool >= 0. && read(m_tiExtraRetract, params.extra_retract);
     params.cool = int(std::lround(cool));
 
     params.waits.clear();

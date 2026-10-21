@@ -44,6 +44,7 @@
 #include <fstream>
 #include "libslic3r/calib.hpp"
 #include "libslic3r/GCode/OozeStop.hpp"
+#include "libslic3r/GCode/OozeTower.hpp"
 #include "libslic3r/ReportedNozzle.hpp"
 #include <iterator>
 #include "libslic3r/Format/OBJ.hpp"
@@ -17756,9 +17757,23 @@ void Plater::calib_retraction(const Calib_Params& params)
 // the user can retune one cylinder by renaming it.
 bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
 {
+    auto print_config   = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    auto printer_config = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
+
+    // Each cylinder's tower takes the shape of the print's ooze tower (GCode/OozeTower.hpp), which places
+    // it right behind the cylinder when slicing; the layout leaves room for it.
+    OozeCalibParams layout_params = params;
+    if (params.stop == OozeStopKind::Tower) {
+        const OozeTowerShape shape = make_ooze_tower_shape(print_config->opt_float("ooze_tower_diameter"),
+                                                           print_config->opt_int("ooze_tower_walls"),
+                                                           print_config->opt_int("ooze_tower_brim_loops"),
+                                                           printer_config->option<ConfigOptionFloats>("nozzle_diameter")->get_at(0),
+                                                           print_config->opt_float("layer_height"));
+        layout_params.tower_footprint = shape.walls > 0 ? 2. * shape.footprint_radius() : 0.;
+    }
     const BoundingBoxf bed = build_volume().bounding_volume2d();
     std::string        layout_error;
-    const std::optional<OozeCalibLayout> layout = ooze_calib_layout(params, bed.min, bed.max, &layout_error);
+    const std::optional<OozeCalibLayout> layout = ooze_calib_layout(layout_params, bed.min, bed.max, &layout_error);
     if (!layout) {
         error = from_u8(layout_error);
         return false;
@@ -17767,10 +17782,10 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
     new_project(false, false, _L("Ooze and reprime"));
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
 
-    auto print_config   = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
-    auto printer_config = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
     // Each layer starts with a stop, which a spiral vase would never make.
     print_config->set_key_value("spiral_mode", new ConfigOptionBool(false));
+    // The cylinders have their own towers; a tower for the whole print would only get in the way.
+    print_config->set_key_value("ooze_tower", new ConfigOptionBool(false));
     print_config->set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
     // Firmware retraction ignores the restart length the test sets.
     printer_config->set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
@@ -17826,7 +17841,8 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
         // TRN: %1% is the number of stops, %2% the minutes spent waiting.
         format_wxstr(_L("Ooze ladder: %1% stops, about %2% minutes of waiting. Rows run front to back by wait time and "
                         "columns left to right by reprime length. Each restart is on the back of its cylinder: a gap "
-                        "means too little reprime, a blob too much."),
+                        "means too little reprime, a blob too much. With ooze towers, each cylinder's tower is printed "
+                        "behind it during slicing."),
                      layout->stops, int(std::lround(layout->wait_total / 60.))) :
         format_wxstr(_L("Reprime check: %1% stops, about %2% minutes of waiting. Reprime lengths rise from left to "
                         "right. Pick the cylinder whose seam at the back is neither gapped nor blobbed."),
