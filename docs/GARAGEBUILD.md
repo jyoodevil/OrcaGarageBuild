@@ -60,6 +60,18 @@ Files sliced with stops carry `; OOZE_POST_DONE native` in the header, so the ol
 post-processing script leaves them alone. The code is in `src/libslic3r/GCode/OozeStop.*` and the `ooze_*`
 functions in `GCode.cpp`. The tests are tagged `[OozeStop]`.
 
+## Next update list
+
+- **Import settings from other OrcaSlicer forks.** A popup that finds every OrcaSlicer-family settings folder
+  (OrcaSlicer, OrcaSlicer WaveOverhangs and other forks) and lets you pick which ones to copy printer, filament and
+  process presets from. Show it on first launch and from the File menu. Notes from the first install:
+  - The current first-launch import never showed. It only runs when the settings folder doesn't exist yet, but the
+    folder already exists by then (the bundled Python cache and machine id are written to it first). Base "first
+    launch" on there being no user presets or no `OrcaGarageBuild.conf` instead.
+  - Copy only the `user/<id>/{machine,filament,process}` presets, and skip `.bak` files, rather than the whole folder.
+  - Say which printer vendors the copied presets need (Sovol, for example) so they can be enabled in printer
+    setup. Presets whose vendor isn't enabled don't show up.
+
 ## Builds
 
 The **GarageBuild Windows** workflow builds the Windows x64 installer and portable zip on every push to `main`.
