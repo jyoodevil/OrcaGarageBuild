@@ -1,0 +1,50 @@
+# OrcaGarageBuild: reruns the GarageBuild tests on the test binaries of an earlier GarageBuild Windows run and
+# reports each suite's failures as an annotation. Push this branch to run it.
+name: GarageBuild test rerun
+
+on:
+  push:
+    branches:
+      - ci/garage-test-rerun
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  RUN_ID: "39662670340"
+  BUILD_SHA: "e05b857cf276449f5e44d53f86ddeb25e8aa0aac"
+
+jobs:
+  rerun:
+    name: GarageBuild test rerun
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_SHA }}
+          sparse-checkout: |
+            tests
+            resources
+      - name: Restore Test Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.BUILD_SHA }}-tests-windows-x64
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Run the GarageBuild tests
+        shell: bash
+        run: |
+          tar -xf build_tests.tar
+          status=0
+          for suite in libslic3r fff_print; do
+            exe=$(find build/tests/$suite -name "${suite}_tests.exe" | head -n 1)
+            echo "== $exe"
+            out=$("$exe" "[OozeStop],[ReportedNozzle]" -r compact 2>&1) || status=1
+            echo "$out"
+            fails=$(echo "$out" | tr -d '\r' | grep -v "^Passed\|^All tests passed" | head -n 40)
+            msg=$(printf '%s' "$fails" | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+            echo "::error title=${suite} tests::${msg}"
+          done
+          exit $status
