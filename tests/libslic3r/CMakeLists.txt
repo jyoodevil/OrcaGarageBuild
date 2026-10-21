@@ -55,6 +55,7 @@ add_executable(${_TEST_NAME}_tests
     test_nozzle_volume_type.cpp
     test_obj.cpp
     test_ooze_stop.cpp
+    test_reported_nozzle.cpp
     test_step.cpp
     test_stl.cpp
     test_triangle_selector.cpp

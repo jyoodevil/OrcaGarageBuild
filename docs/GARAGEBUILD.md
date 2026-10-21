@@ -1,11 +1,12 @@
 # OrcaGarageBuild
 
 OrcaGarageBuild is a personal test fork of [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer). It is upstream
-OrcaSlicer with two additions:
+OrcaSlicer with these additions:
 
 - **Wave overhangs** from [OrcaSlicer-WaveOverhangs](https://github.com/dennisklappe/OrcaSlicer-WaveOverhangs)
   (settings: [WAVE_OVERHANG_SETTINGS.md](WAVE_OVERHANG_SETTINGS.md)).
 - **Ooze and reprime calibration**, for large nozzles that lose pressure while they wait.
+- **Report the variant's nozzle to the printer**, for nozzle sizes a Bambu Lab printer can't be set to.
 
 It installs as *OrcaGarageBuild* (`orca-garagebuild.exe`). It keeps its settings in its own folder
 (`%APPDATA%\OrcaGarageBuild` on Windows), so it never touches an existing OrcaSlicer install. On first launch it
@@ -60,6 +61,27 @@ Files sliced with stops carry `; OOZE_POST_DONE native` in the header, so the ol
 post-processing script leaves them alone. The code is in `src/libslic3r/GCode/OozeStop.*` and the `ooze_*`
 functions in `GCode.cpp`. The tests are tagged `[OozeStop]`.
 
+## Odd nozzle sizes on Bambu Lab printers
+
+A Bambu Lab printer only takes the nozzle sizes it knows (0.2, 0.4, 0.6 and 0.8 mm). It refuses a sliced file
+whose nozzle size doesn't match the size set on the printer, so a 1.8 mm nozzle can't be printed as it is.
+
+Turn on **Printer settings > Basic information > Advanced > Report the variant's nozzle to the printer** in the
+printer preset of the big nozzle. Sliced files then tell the printer it has the nozzle of the preset's variant
+(0.4 mm for a 0.4 variant, and 0.4 mm when the variant isn't a number) instead of the real one. Set the printer
+to that size too, with the same nozzle flow type (Standard or High Flow) as the preset. Slicing still uses the real
+nozzle diameter for line widths, flow and everything else.
+
+What the option changes, and only in sliced files (`.gcode` and `.gcode.3mf`), never in saved projects:
+
+- `nozzle_diameter` in the G-code config block.
+- The `.gcode.3mf` slice info (`nozzle_diameters` and each filament's `nozzle_diameter`), project settings and
+  plate data.
+- The nozzle the **Print** dialog compares with the printer's.
+
+This replaces the `Bambu Nozzle Fix.bat` relabelling script. The code is in `src/libslic3r/ReportedNozzle.*` and
+the tests are tagged `[ReportedNozzle]`.
+
 ## Next update list
 
 - **Import settings from other OrcaSlicer forks.** A popup that finds every OrcaSlicer-family settings folder
@@ -75,7 +97,7 @@ functions in `GCode.cpp`. The tests are tagged `[OozeStop]`.
 ## Builds
 
 The **GarageBuild Windows** workflow builds the Windows x64 installer and portable zip on every push to `main`.
-Then it runs the `[OozeStop]` tests. Download the build from the run's **Artifacts**. The full upstream
+Then it runs the `[OozeStop]` and `[ReportedNozzle]` tests. Download the build from the run's **Artifacts**. The full upstream
 `build_all.yml` (every platform) runs only when started from the Actions tab.
 
 ## Updating from upstream

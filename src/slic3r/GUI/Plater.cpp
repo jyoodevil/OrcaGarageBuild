@@ -44,6 +44,7 @@
 #include <fstream>
 #include "libslic3r/calib.hpp"
 #include "libslic3r/GCode/OozeStop.hpp"
+#include "libslic3r/ReportedNozzle.hpp"
 #include <iterator>
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -14264,6 +14265,9 @@ PlateBBoxData Plater::priv::generate_first_layer_bbox()
     auto opt_nozzle_diameters = print->config().option<ConfigOptionFloats>("nozzle_diameter");
     if (opt_nozzle_diameters != nullptr)
         bboxdata.nozzle_diameter = float(opt_nozzle_diameters->get_at(bboxdata.first_extruder));
+    // OrcaGarageBuild: the plate data goes to the printer, so it carries the nozzle the printer is told about.
+    if (const double reported_nozzle = nozzle_diameter_reported_to_printer(print->full_print_config()); reported_nozzle > 0.)
+        bboxdata.nozzle_diameter = float(reported_nozzle);
     //PrintObjectPtrs objects;
     //if (this->printer_technology == ptFFF) {
     //    objects = this->background_process.m_fff_print->objects().vector();
@@ -20429,6 +20433,9 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
     publish(p->model, strategy);
 
     DynamicPrintConfig cfg = wxGetApp().preset_bundle->full_config_secure();
+    // OrcaGarageBuild: a sliced file goes to the printer, so it carries the nozzle the printer is told about.
+    if (strategy & SaveStrategy::WithGcode)
+        apply_nozzle_diameter_reported_to_printer(cfg);
     const std::string path_u8 = into_u8(path);
     wxBusyCursor wait;
 

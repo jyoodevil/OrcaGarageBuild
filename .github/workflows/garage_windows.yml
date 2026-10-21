@@ -52,12 +52,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: ${{ github.sha }}-tests-windows-x64
-      - name: Run the ooze stop tests
+      - name: Run the GarageBuild tests
         shell: bash
         run: |
           tar -xf build_tests.tar
           for suite in libslic3r fff_print; do
             exe=$(find build/tests/$suite -name "${suite}_tests.exe" | head -n 1)
             echo "== $exe"
-            "$exe" "[OozeStop]"
+            "$exe" "[OozeStop],[ReportedNozzle]"
           done

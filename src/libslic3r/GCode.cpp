@@ -53,6 +53,7 @@
 #include "Time.hpp"
 #include "GCode/ExtrusionProcessor.hpp"
 #include "GCode/OozeStop.hpp"
+#include "ReportedNozzle.hpp"
 #include <Eigen/Geometry>
 #include <Shiny/ShinyMacros.h>
 #include <algorithm>
@@ -8257,6 +8258,8 @@ void GCode::apply_print_config(const PrintConfig &print_config)
 void GCode::append_full_config(const Print &print, std::string &str)
 {
     DynamicPrintConfig cfg = print.full_print_config();
+    // OrcaGarageBuild: the config block is read by the printer, so it carries the nozzle it is told about.
+    apply_nozzle_diameter_reported_to_printer(cfg);
     { // correct the flush_volumes_matrix with flush_multiplier values
         // Fast purge mode uses flush_multiplier_fast; Default is inert.
         std::vector<double> temp_cfg_flush_multiplier = (print.config().prime_volume_mode == PrimeVolumeMode::pvmFast)

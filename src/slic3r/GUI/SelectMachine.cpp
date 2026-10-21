@@ -1,6 +1,7 @@
 #include "SelectMachine.hpp"
 #include "I18N.hpp"
 
+#include "libslic3r/ReportedNozzle.hpp"
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/Color.hpp"
@@ -4434,6 +4435,8 @@ static std::unordered_multimap<int, NozzleDef> s_get_slicing_extuder_nozzles()
     if (!nozzle_volume_type_opt) {
         return used_extuder_nozzles;
     }
+    // OrcaGarageBuild: compare the printer's nozzle with the one the sliced file reports to it.
+    const double reported_nozzle = nozzle_diameter_reported_to_printer(preset_bundle->full_config());
 
     try {
         auto nozzle_group_res = DevUtilBackend::GetNozzleGroupResult(wxGetApp().plater());
@@ -4463,7 +4466,7 @@ static std::unordered_multimap<int, NozzleDef> s_get_slicing_extuder_nozzles()
             }
 
             NozzleDef nozzle_data;
-            nozzle_data.nozzle_diameter = float(opt_nozzle_diameters->get_at(logic_extruder_idx));
+            nozzle_data.nozzle_diameter = reported_nozzle > 0. ? float(reported_nozzle) : float(opt_nozzle_diameters->get_at(logic_extruder_idx));
             nozzle_data.nozzle_flow_type = NozzleFlowType::S_FLOW;// default value
 
             auto volume_type = (NozzleVolumeType)nozzle_volume_type_opt->get_at(logic_extruder_idx);

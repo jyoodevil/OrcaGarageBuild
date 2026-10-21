@@ -5333,6 +5333,7 @@ void TabPrinter::build_fff()
         optgroup->append_single_option_line("gcode_skip_config_block", "printer_basic_information_advanced#skip-g-code-config-block");
         optgroup->append_single_option_line("pellet_modded_printer", "printer_basic_information_advanced#pellet-modded-printer");
         optgroup->append_single_option_line("bbl_use_printhost", "printer_basic_information_advanced#use-3rd-party-print-host");
+        optgroup->append_single_option_line("report_variant_nozzle"); // OrcaGarageBuild
 
         // "Printer Agent" dropdown - printer_agent is a coString; gui_type routes it to
         // PrinterAgentChoice instead of a TextCtrl. Rows and values come from the live agent

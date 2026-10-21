@@ -1952,6 +1952,8 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                wait_for_temp_on_wipe_tower))
     ((ConfigOptionBool,                support_multi_bed_types))
     ((ConfigOptionBool,                use_3mf))
+    // OrcaGarageBuild: sliced files tell the printer it has the variant's nozzle (see nozzle_diameter_reported_to_printer()).
+    ((ConfigOptionBool,                report_variant_nozzle))
 
     // Small Area Infill Flow Compensation
     ((ConfigOptionStrings,              small_area_infill_flow_compensation_model))

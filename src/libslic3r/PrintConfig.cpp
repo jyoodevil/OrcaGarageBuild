@@ -1164,6 +1164,17 @@ void PrintConfigDef::init_common_params()
     def->cli = ConfigOptionDef::nocli;
     def->set_default_value(new ConfigOptionBool(false));
 
+    // OrcaGarageBuild
+    def = this->add("report_variant_nozzle", coBool);
+    def->label = L("Report the variant's nozzle to the printer");
+    def->tooltip = L("For a nozzle size the printer can't be set to, such as a 1.8 mm nozzle on a Bambu Lab printer. "
+                     "Sliced files then tell the printer it has the nozzle of this printer's variant (0.4 mm when the "
+                     "variant is 0.4), so the printer accepts them. Set the printer to that nozzle size too. Slicing "
+                     "still uses the real nozzle diameter.");
+    def->mode = comSimple;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("printer_agent", coString);
     def->label = L("Printer Agent");
     def->tooltip = L("Select the network agent implementation for printer communication.");

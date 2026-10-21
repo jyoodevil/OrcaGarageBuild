@@ -263,6 +263,8 @@ set(lisbslic3r_sources
     GCode/CoolingBuffer.cpp
     GCode/OozeStop.cpp
     GCode/OozeStop.hpp
+    ReportedNozzle.cpp
+    ReportedNozzle.hpp
     GCode/CoolingBuffer.hpp
     GCode/TimelapsePosPicker.cpp
     GCode/TimelapsePosPicker.hpp
