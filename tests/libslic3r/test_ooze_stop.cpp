@@ -48,13 +48,14 @@ TEST_CASE("Ooze name tokens ignore case, take underscores and a file extension",
     CHECK_THAT(purge->reprime_at_layer(0), WithinAbs(-0.25, 1e-9));
 }
 
-TEST_CASE("An ooze object name can ask for a tower and a deeper retraction", "[OozeStop]")
+TEST_CASE("An ooze object name can ask for a tower, a deeper retraction and a settle", "[OozeStop]")
 {
-    const std::optional<OozeStopSpec> spec = parse_ooze_object_name("ooze W30 R0.5 C40 D2.5 T");
+    const std::optional<OozeStopSpec> spec = parse_ooze_object_name("ooze W30 R0.5 C40 D2.5 S1.25 T");
     REQUIRE(spec.has_value());
     CHECK(spec->tower);
     CHECK_FALSE(spec->hover);
     CHECK_THAT(spec->extra_retract, WithinAbs(2.5, 1e-9));
+    CHECK_THAT(spec->restart_dwell, WithinAbs(1.25, 1e-9));
     CHECK(spec->cool_deg() == 40);
 
     // Hovering stays over the part, so a tower token has nothing to do.
@@ -91,6 +92,7 @@ TEST_CASE("An ooze object name reads back as the same stop", "[OozeStop]")
     spec.step_layers  = 2;
     spec.cool         = 15;
     spec.extra_retract = 1.5;
+    spec.restart_dwell = 0.5;
     spec.tower        = true;
     spec.purge        = true;
     const std::string name = ooze_object_name(spec);
@@ -101,6 +103,7 @@ TEST_CASE("An ooze object name reads back as the same stop", "[OozeStop]")
     CHECK_THAT(back->reprime_at_layer(4), WithinAbs(1.25, 1e-9));
     CHECK(back->cool_deg() == 15);
     CHECK_THAT(back->extra_retract, WithinAbs(1.5, 1e-9));
+    CHECK_THAT(back->restart_dwell, WithinAbs(0.5, 1e-9));
     CHECK(back->tower);
     CHECK(back->purge);
 }
@@ -192,7 +195,7 @@ TEST_CASE("The ooze ladder leaves room for a tower behind every cylinder", "[Ooz
     // A 1.8 mm nozzle at 0.7 mm layers with the default 25 mm, 3-wall tower and 2 brim loops.
     const OozeTowerShape shape = make_ooze_tower_shape(25., 3, 2, 1.8, 0.7);
     REQUIRE(shape.walls == 3);
-    OozeCalibParams params; // towers, 3 waits by 6 reprime lengths
+    OozeCalibParams params; // towers, 4 waits by 6 reprime lengths
     params.tower_footprint = 2. * shape.footprint_radius();
     std::string error;
     const std::optional<OozeCalibLayout> layout = ooze_calib_layout(params, Vec2d(0., 0.), Vec2d(256., 256.), &error);
@@ -207,6 +210,7 @@ TEST_CASE("The ooze ladder leaves room for a tower behind every cylinder", "[Ooz
         REQUIRE(spec.has_value());
         CHECK(spec->tower);
         CHECK_THAT(spec->extra_retract, WithinAbs(params.extra_retract, 1e-9));
+        CHECK_THAT(spec->restart_dwell, WithinAbs(params.restart_dwell, 1e-9));
         const Vec2d tower = object.center + Vec2d(0., layout->tower_dy);
         CHECK(tower.x() - r >= 0.);
         CHECK(tower.x() + r <= 256.);

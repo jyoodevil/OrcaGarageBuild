@@ -874,6 +874,8 @@ protected:
     std::optional<OozeStop>             m_ooze_hover;
     // Restart length that replaces retract_restart_extra on the next unretract.
     std::optional<double>               m_ooze_restart_extra;
+    // Seconds to wait after that unretract, for the pressure to build before the first move.
+    std::optional<double>               m_ooze_restart_dwell;
     // Object, copy and layer of the last stop, so a second visit on the same layer doesn't stop again.
     std::tuple<const PrintObject*, size_t, int> m_ooze_last_stop{nullptr, 0, -1};
     // Towers of ooze test objects with T in their name, by object and copy.

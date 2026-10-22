@@ -1910,6 +1910,7 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
 
     const wxString cool_str          = _L("Cool while waiting: ");
     const wxString retract_str       = _L("Retract further while waiting: ");
+    const wxString settle_str        = _L("Settle after the reprime: ");
     const wxString waits_str         = _L("Wait times: ");
     const wxString reprime_start_str = _L("First reprime length: ");
     const wxString reprime_step_str  = _L("Reprime step: ");
@@ -1918,8 +1919,9 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     const wxString wait_str          = _L("Wait time: ");
     const wxString reprime_mid_str   = _L("Middle reprime length: ");
     const wxString boxes_str         = _L("Cylinders: ");
-    const int      text_max          = GetTextMax(this, {cool_str, retract_str, waits_str, reprime_start_str, reprime_step_str,
-                                                        reprime_count_str, layers_str, wait_str, reprime_mid_str, boxes_str});
+    const int      text_max          = GetTextMax(this, {cool_str, retract_str, settle_str, waits_str, reprime_start_str,
+                                                        reprime_step_str, reprime_count_str, layers_str, wait_str, reprime_mid_str,
+                                                        boxes_str});
     const wxSize   st_size(text_max, -1);
     const wxSize   ti_size = FromDIP(wxSize(120, -1));
 
@@ -1945,9 +1947,11 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     m_rbStop->SetSelection(int(m_params.stop));
     stop_box->Add(m_rbStop, 0, wxALL | wxEXPAND, FromDIP(4));
     auto stop_note = new wxStaticText(this, wxID_ANY,
-        _L("Over an ooze tower, each cylinder gets a tower behind it: the nozzle waits over the tower's hollow, then prints "
-           "the tower's layer, which wipes it, before it restarts. The tower's size is in the print settings, under "
-           "Others > Ooze tower. Hover over the part to see how long a travel can be before it needs the tower."));
+        _L("Over an ooze tower, each cylinder gets a tower behind it. Every stop prints the tower's layer, waits over the "
+           "tower's hollow while the nozzle oozes, wipes across the tower and goes back to the cylinder, where it pushes "
+           "the reprime and lets the pressure build before printing. The wait is the ooze time; the best reprime for each "
+           "wait is what a travel of that length needs. The tower's size is in the print settings, under Others > Ooze "
+           "tower."));
     stop_note->Wrap(FromDIP(420));
     stop_box->Add(stop_note, 0, wxALL, FromDIP(4));
     m_stChuteNote = new wxStaticText(this, wxID_ANY, _L("This printer has no purge chute to park over."));
@@ -1955,6 +1959,10 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     stop_box->Add(m_stChuteNote, 0, wxALL, FromDIP(4));
     m_tiCool = add_row(stop_box, cool_str, wxString::Format("%d", m_params.cool), _L("\u2103" /* °C */), number_validator);
     m_tiExtraRetract = add_row(stop_box, retract_str, wxString::FromDouble(m_params.extra_retract), _L("mm"), number_validator);
+    m_tiSettle = add_row(stop_box, settle_str, wxString::FromDouble(m_params.restart_dwell), _L("s"), number_validator);
+    m_tiSettle->SetToolTip(_L("Time the nozzle waits at the restart point after pushing the reprime, so the pressure builds "
+                              "up before it starts to print. A large nozzle needs a moment before the pushed filament comes "
+                              "out."));
     m_tiExtraRetract->SetToolTip(_L("Filament retracted on top of the normal retraction while the nozzle waits, and pushed "
                                     "back before it prints again. A deeper retraction oozes less, but too deep can pull "
                                     "molten filament into the cold zone."));
@@ -2060,7 +2068,8 @@ void Ooze_Reprime_Test_Dlg::on_start(wxCommandEvent& event)
     params.purge  = m_cbPurge->GetValue();
 
     double cool = 0.;
-    bool   ok   = read(m_tiCool, cool) && cool >= 0. && read(m_tiExtraRetract, params.extra_retract);
+    bool   ok   = read(m_tiCool, cool) && cool >= 0. && read(m_tiExtraRetract, params.extra_retract) &&
+                read(m_tiSettle, params.restart_dwell);
     params.cool = int(std::lround(cool));
 
     params.waits.clear();

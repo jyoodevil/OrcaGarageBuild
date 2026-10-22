@@ -217,45 +217,81 @@ TEST_CASE("Parking an ooze object needs a printer with a purge chute", "[OozeSto
     CHECK_THROWS(slice_ooze_cube("ooze W5 R1", ooze_config(), false));
 }
 
-TEST_CASE("A tower stop waits over the hollow of a tower behind the object and prints the tower before restarting",
+TEST_CASE("A tower stop prints the tower, waits over its hollow, wipes across it, then reprimes and settles",
           "[OozeStop][OozeTower]")
 {
-    // No purge chute needed. Retract 2 mm more while waiting, then reprime 1 mm.
-    const std::string gcode = slice_ooze_cube("ooze W5 R1 D2 T", ooze_config(), false);
+    // No purge chute needed. Retract 2 mm more while waiting, reprime 1 mm, then let the pressure build for 1.5 s.
+    const std::string gcode = slice_ooze_cube("ooze W5 R1 D2 S1.5 T", ooze_config(), false);
 
     CHECK(count_of(gcode, "; OOZE stop") == ooze_layers);
     CHECK(count_of(gcode, "G4 P5000") == ooze_layers);
+    CHECK(count_of(gcode, "G4 P1500") == ooze_layers);
     // One layer of the tower per stop.
     CHECK(count_role_tags(gcode, "Prime tower") == ooze_layers);
 
-    // The nozzle waits behind the cube, clear of it.
+    // Per stop: where the nozzle waits, where it goes next (the wipe), and the order of events after the stop:
+    // t = tower loops, w = the wait, r = the push at the restart, s = the settle.
+    struct Stop
+    {
+        Vec2d       wait;
+        Vec2d       wipe;
+        bool        wiped = false;
+        std::string events;
+        std::vector<double> pushes;
+    };
+    std::vector<Stop>  stops;
     std::istringstream in(gcode);
     std::string        line;
     double             x = 0., y = 0.;
-    std::vector<Vec2d> waits;
     while (std::getline(in, line)) {
-        if (line.rfind("G4 P5000", 0) == 0)
-            waits.emplace_back(x, y);
+        if (line.rfind("; OOZE stop", 0) == 0) {
+            stops.emplace_back();
+            continue;
+        }
+        if (stops.empty())
+            continue;
+        Stop &stop = stops.back();
+        if (line == "; FEATURE: Prime tower" || line == ";TYPE:Prime tower")
+            stop.events += 't';
+        if (line.rfind("G4 P5000", 0) == 0) {
+            stop.wait = Vec2d(x, y);
+            stop.events += 'w';
+        }
+        if (line.rfind("G4 P1500", 0) == 0)
+            stop.events += 's';
+        if (line.rfind("G1 E", 0) == 0) {
+            const double e = std::stod(line.substr(4));
+            if (e > 0. && stop.pushes.size() < 2) {
+                stop.pushes.push_back(e);
+                if (stop.pushes.size() == 2)
+                    stop.events += 'r';
+            }
+        }
         if (line.rfind("G1 ", 0) != 0)
             continue;
-        if (const size_t at = line.find(" X"); at != std::string::npos)
-            x = std::stod(line.substr(at + 2));
-        if (const size_t at = line.find(" Y"); at != std::string::npos)
-            y = std::stod(line.substr(at + 2));
+        const size_t at_x = line.find(" X"), at_y = line.find(" Y");
+        if (at_x != std::string::npos)
+            x = std::stod(line.substr(at_x + 2));
+        if (at_y != std::string::npos)
+            y = std::stod(line.substr(at_y + 2));
+        if (!stop.wiped && stop.events == "tw" && (at_x != std::string::npos || at_y != std::string::npos)) {
+            stop.wipe  = Vec2d(x, y);
+            stop.wiped = true;
+        }
     }
-    REQUIRE(waits.size() == ooze_layers);
-    for (const Vec2d &wait : waits) {
-        CHECK_THAT(wait.x(), WithinAbs(ooze_cube_center.x(), 1e-3));
-        CHECK(wait.y() > ooze_cube_center.y() + 2. + ooze_tower_clearance);
-    }
-
-    // The tower takes back the retraction and the extra 2 mm; the cube restarts with the retraction and the reprime.
-    const std::vector<std::vector<double>> pushes = pushes_after(gcode, "; OOZE stop", 2);
-    REQUIRE(pushes.size() == ooze_layers);
-    for (const std::vector<double> &stop : pushes) {
-        REQUIRE(stop.size() == 2);
-        CHECK_THAT(stop[0], WithinAbs(ooze_retraction + 2., 1e-4));
-        CHECK_THAT(stop[1], WithinAbs(ooze_retraction + 1., 1e-4));
+    REQUIRE(stops.size() == ooze_layers);
+    for (const Stop &stop : stops) {
+        INFO("events " << stop.events);
+        CHECK(stop.events.rfind("twrs", 0) == 0);
+        // The nozzle waits behind the cube, clear of it, and wipes across the tower's wall towards the cube.
+        CHECK_THAT(stop.wait.x(), WithinAbs(ooze_cube_center.x(), 1e-3));
+        CHECK(stop.wait.y() > ooze_cube_center.y() + 2. + ooze_tower_clearance);
+        CHECK(stop.wipe.y() < stop.wait.y() - 12.5);
+        CHECK(stop.wipe.y() > ooze_cube_center.y() + 2.);
+        // The tower takes back the normal retraction; the cube restarts with it, the extra 2 mm and the reprime.
+        REQUIRE(stop.pushes.size() == 2);
+        CHECK_THAT(stop.pushes[0], WithinAbs(ooze_retraction, 1e-4));
+        CHECK_THAT(stop.pushes[1], WithinAbs(ooze_retraction + 2. + 1., 1e-4));
     }
 }
 

@@ -47,6 +47,7 @@ std::optional<OozeStopSpec> parse_ooze_object_name(const std::string &name)
     static const regex reprime_re(R"((?:^|[\s_])R(-?\d+(?:\.\d+)?)(?:\+(\d+(?:\.\d+)?)/(\d+))?)", regex::icase);
     static const regex cool_re(R"((?:^|[\s_])C(\d+))", regex::icase);
     static const regex extra_retract_re(R"((?:^|[\s_])D(\d+(?:\.\d+)?))", regex::icase);
+    static const regex restart_dwell_re(R"((?:^|[\s_])S(\d+(?:\.\d+)?))", regex::icase);
     static const regex tower_re(R"((?:^|[\s_])T(?=$|[\s_.]))", regex::icase);
     static const regex hover_re(R"((?:^|[\s_])H(?=$|[\s_.]))", regex::icase);
     static const regex purge_re(R"((?:^|[\s_])P(?=$|[\s_.]))", regex::icase);
@@ -71,6 +72,8 @@ std::optional<OozeStopSpec> parse_ooze_object_name(const std::string &name)
         spec.cool = std::atoi(m[1].str().c_str());
     if (std::regex_search(name, m, extra_retract_re))
         spec.extra_retract = parse_number(m[1].str());
+    if (std::regex_search(name, m, restart_dwell_re))
+        spec.restart_dwell = parse_number(m[1].str());
     spec.hover = std::regex_search(name, hover_re);
     spec.tower = !spec.hover && std::regex_search(name, tower_re);
     spec.purge = !spec.hover && std::regex_search(name, purge_re);
@@ -86,6 +89,8 @@ std::string ooze_object_name(const OozeStopSpec &spec)
         name += " C" + std::to_string(spec.cool);
     if (spec.extra_retract > 0.)
         name += " D" + compact_number(spec.extra_retract);
+    if (spec.restart_dwell > 0.)
+        name += " S" + compact_number(spec.restart_dwell);
     if (spec.hover)
         return name + " H";
     if (spec.tower)
@@ -101,7 +106,7 @@ bool printer_has_bambu_purge_chute(const std::string &printer_model)
     return std::regex_search(printer_model, x1_p1);
 }
 
-std::string ooze_dwell_gcode(double seconds, bool bambu_firmware)
+std::string ooze_dwell_gcode(double seconds, bool bambu_firmware, const char *comment)
 {
     const long total_ms = std::lround(std::max(0., seconds) * 1000.);
     if (total_ms <= 0)
@@ -111,11 +116,11 @@ std::string ooze_dwell_gcode(double seconds, bool bambu_firmware)
         const long whole = total_ms / 1000;
         const long ms    = total_ms % 1000;
         if (whole > 0)
-            out += "M400 S" + std::to_string(whole) + " ; ooze wait\n";
+            out += "M400 S" + std::to_string(whole) + " ; " + comment + "\n";
         if (ms > 0)
             out += "M400 P" + std::to_string(ms) + "\n";
     } else {
-        out += "G4 P" + std::to_string(total_ms) + " ; ooze wait\n";
+        out += "G4 P" + std::to_string(total_ms) + " ; " + comment + "\n";
     }
     return out;
 }
@@ -166,6 +171,8 @@ std::optional<OozeCalibLayout> ooze_calib_layout(const OozeCalibParams &p, const
         return fail(_u8L("Use 1 to 50 layers."));
     if (p.extra_retract < 0. || p.extra_retract > 10.)
         return fail(_u8L("Retract further by 0 to 10 mm while waiting."));
+    if (p.restart_dwell < 0. || p.restart_dwell > 30.)
+        return fail(_u8L("Let the pressure build for 0 to 30 seconds after the reprime."));
     const bool tower = p.stop == OozeStopKind::Tower;
     if (tower && !(p.tower_footprint > 0.))
         return fail(_u8L("The ooze tower is too small for its walls. Make it wider or give it fewer walls."));
@@ -206,6 +213,7 @@ std::optional<OozeCalibLayout> ooze_calib_layout(const OozeCalibParams &p, const
             spec.purge         = !p.ladder && !spec.hover && p.purge;
             spec.cool          = spec.hover ? -1 : std::max(0, p.cool);
             spec.extra_retract = p.extra_retract;
+            spec.restart_dwell = p.restart_dwell;
             // Rows run front to back, columns left to right; the cylinder sits at the front of its cell.
             const Vec2d cell_min = grid_min + Vec2d(col * pitch.x(), row * pitch.y());
             const Vec2d center   = cell_min + Vec2d(0.5 * cell_w(layout.diameter), layout.brim + 0.5 * layout.diameter);

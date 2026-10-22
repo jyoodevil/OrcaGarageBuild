@@ -35,11 +35,17 @@ restart* (`retract_restart_extra`) for that restart only.
 
 ### Stops
 
-- **Over an ooze tower** (any printer, the default): each cylinder gets its own ooze tower right behind it. The
-  nozzle retracts, lifts and waits over the tower's hollow centre, so what it drips falls inside the tower. It cools
-  by the chosen amount while it waits, then reheats fully and prints the tower's layer from the inside out, which
-  wipes off what still hangs from the nozzle and builds the pressure back up. Then it goes back to the cylinder and
-  pushes the reprime. The towers show up when the plate is sliced; their size comes from the print settings under
+- **Over an ooze tower** (any printer, the default): each cylinder gets its own ooze tower right behind it. Every
+  stop is one ooze cycle, in the order a print meets it:
+  1. Print the tower's layer, from the inside out. This leaves the nozzle clean and primed, so every wait starts
+     from the same state.
+  2. Retract, lift 2 mm and wait over the tower's hollow centre for the row's wait time; what drips falls inside.
+  3. Come down to the top of the tower and wipe across its walls towards the cylinder, catching what hangs from the
+     nozzle.
+  4. Go back to the cylinder, push the retraction plus the column's reprime, and wait there for the **settle** time
+     so the pressure builds before the nozzle moves.
+
+  The towers show up when the plate is sliced; their size comes from the print settings under
   **Others > Ooze tower**.
 - **Park** (Bambu Lab X1 and P1): the nozzle parks over the purge chute, cools while it waits, then shakes off and
   wipes on the silicone wiper the way Bambu's filament change does. This needs the wiper in place.
@@ -47,8 +53,25 @@ restart* (`retract_restart_extra`) for that restart only.
   point, as it would during a long travel. Use it with short waits to find how long a travel can be before the
   restart suffers; that is the ooze tower's **Travel time** for normal prints.
 
-Every stop can also retract further while it waits (**Retract further while waiting**, 2 mm by default) and push it
-back before printing again. A deeper retraction oozes less, but too deep can pull molten filament into the cold zone.
+Every stop can also cool while it waits and retract further while it waits (**Retract further while waiting**),
+pushing it back on restart. Both are off by default, so a wait behaves like a travel. A deeper retraction oozes less,
+but too deep can pull molten filament into the cold zone.
+
+The defaults are made for finding the reprime a travel needs: waits of 5, 15, 30 and 60 seconds, reprimes from 0 to
+5 mm in 1 mm steps, and a 1 second settle.
+
+### Reading the ladder
+
+Each cylinder restarts at the back, on the side facing its tower, and prints its first loop from there. Look at the
+first part of the loop after the restart on each layer:
+
+- **Starved** (thin or missing line): too little reprime, or not enough settle for the pressure to build.
+- **Blob or bulge** at the restart: too much reprime.
+- **Even line**: the right reprime for that row's wait.
+
+Go row by row (front to back is shortest to longest wait) and note the column with the even line. That gives the
+reprime for each ooze time, which is what a travel of that length needs. If every column of a row is starved, run it
+again with larger reprimes or a longer settle; if every column blobs, use smaller ones.
 
 Waits use `M400 S<seconds>` on Bambu printers, as Bambu's own G-code does, and `G4 P<milliseconds>` elsewhere.
 
@@ -64,11 +87,12 @@ renaming it. A name that starts with the word `ooze` takes these tokens, separat
 | `R0+0.5/3` | Reprime 0 mm, raised by 0.5 mm every 3 layers of the object |
 | `C20` | Cool the nozzle by 20 °C while waiting (default 20 over a tower or the chute, 0 when hovering) |
 | `D2` | Retract 2 mm further while waiting |
+| `S1` | After the reprime, wait 1 second for the pressure to build before printing |
 | `T` | Wait over an ooze tower behind the object and print the tower before restarting |
 | `H` | Hover over the restart point instead |
 | `P` | Purge the reprime into the tower or chute, then restart with the normal extra length |
 
-Without `T` or `H`, the nozzle parks over the purge chute. For example: `ooze W30 R1.5 C40 D2 T`,
+Without `T` or `H`, the nozzle parks over the purge chute. For example: `ooze W30 R3 S1 T`, `ooze W30 R1.5 C40 D2 T`,
 `ooze W20 R0+0.5/3 C0 T`, `ooze W60 R1 H`.
 
 An object with `T` needs room behind it (towards the back of the bed) for its tower, and cannot have a raft, because
@@ -119,6 +143,11 @@ This replaces the `Bambu Nozzle Fix.bat` relabelling script. The code is in `src
 the tests are tagged `[ReportedNozzle]`.
 
 ## Next update list
+
+- **Reprime by travel time.** Feed the ladder's results back into normal prints: a table of ooze times and reprimes
+  (for example `5:1, 15:2, 30:3`), so every restart after a travel pushes the reprime for that travel's length,
+  interpolated between the table's rows, followed by the settle time. Long travels that leave the part would still go
+  through the ooze tower; travels over infill would wipe there and use the table.
 
 - **Show the ooze towers in the Prepare view.** Draw the print's ooze tower and the towers behind ooze test objects on
   the plate, let the print's tower be dragged into place like the prime tower, and have Arrange leave room for them.

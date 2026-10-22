@@ -27,13 +27,15 @@ namespace Slic3r {
 //   C<deg>            cool the nozzle by <deg> while waiting (default 20 parked or over a
 //                     tower, 0 hovering)
 //   D<mm>             retract this much further while waiting, pushed back on restart
-//   T                 wait over an ooze tower behind the object and print the tower's layer
-//                     before restarting (see OozeTower.hpp)
+//   S<s>              after pushing the reprime, wait this long for the pressure to build
+//                     before printing (default 0)
+//   T                 print the layer of an ooze tower behind the object first, then wait over
+//                     its hollow and wipe across it before restarting (see OozeTower.hpp)
 //   H                 hover above the restart point instead
 //   P                 purge R into the chute or the tower, then restart with the normal
 //                     extra length
 // Without T or H the nozzle parks over the purge chute of a Bambu Lab X1 or P1.
-// Examples: "ooze W30 R1.2 T", "ooze W20 R0+0.5/3 C40 D2 T", "ooze W60 R1 C0 H".
+// Examples: "ooze W30 R1.2 S1 T", "ooze W20 R0+0.5/3 C40 D2 T", "ooze W60 R1 C0 H".
 struct OozeStopSpec
 {
     double wait_s        = 0.;
@@ -42,6 +44,7 @@ struct OozeStopSpec
     int    step_layers   = 0;  // 0: no ramp
     int    cool          = -1; // -1: default for the stop type
     double extra_retract = 0.;
+    double restart_dwell = 0.; // seconds between the reprime and the first move
     bool   tower         = false;
     bool   hover         = false;
     bool   purge         = false;
@@ -84,7 +87,7 @@ inline constexpr std::array<OozeWipeMove, 10> bambu_wipe_moves{{
 
 // G-code that waits for the moves to finish and then for the given time. Bambu
 // firmware dwells with M400 S<s> / M400 P<ms>, as Bambu's own G-code does.
-std::string ooze_dwell_gcode(double seconds, bool bambu_firmware);
+std::string ooze_dwell_gcode(double seconds, bool bambu_firmware, const char *comment = "ooze wait");
 
 // ---- Ooze & reprime calibration plate ----------------------------------------------
 //
@@ -105,19 +108,21 @@ struct OozeCalibParams
     bool                ladder        = true;
     OozeStopKind        stop          = OozeStopKind::Tower;
     bool                purge         = false; // reprime check only: purge into the chute or tower, restart normally
-    int                 cool          = 40;    // degrees to cool by while waiting over a tower or the chute
-    double              extra_retract = 2.;    // retracted further while waiting
+    // Waits are like travels by default: no cooling and the normal retraction.
+    int                 cool          = 0;     // degrees to cool by while waiting over a tower or the chute
+    double              extra_retract = 0.;    // retracted further while waiting
+    double              restart_dwell = 1.;    // seconds to let the pressure build after the reprime
     // Diameter of each tower's footprint, brim included; needed for Tower stops.
     double              tower_footprint = 0.;
     // Ooze ladder
-    std::vector<double> waits         {10., 30., 90.};
+    std::vector<double> waits         {5., 15., 30., 60.};
     double              reprime_start = 0.;
-    double              reprime_step  = 0.5;
+    double              reprime_step  = 1.;
     int                 reprime_count = 6;
     int                 ladder_layers = 4;
     // Reprime check
     double              wait          = 30.;
-    double              reprime_mid   = 1.;
+    double              reprime_mid   = 2.5;
     double              check_step    = 0.5;
     int                 boxes         = 5;
     int                 check_layers  = 12;

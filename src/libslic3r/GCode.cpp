@@ -7742,6 +7742,7 @@ LayerResult GCode::process_layer(
                 m_ooze_pending.reset();
                 m_ooze_hover.reset();
                 m_ooze_restart_extra.reset();
+                m_ooze_restart_dwell.reset();
 
                 if (this->config().gcode_label_objects) {
                     gcode += std::string("; stop printing object ") +
@@ -9306,6 +9307,11 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
 
     // compensate retraction
     gcode += this->unretract();
+    // OrcaGarageBuild: after an ooze stop, give the reprime time to build the pressure up before moving.
+    if (m_ooze_restart_dwell) {
+        gcode += ooze_dwell_gcode(*m_ooze_restart_dwell, m_ooze_has_chute || this->is_BBL_Printer(), "ooze: let the pressure build");
+        m_ooze_restart_dwell.reset();
+    }
     m_config.apply(m_calib_config);
 
     // Orca: optimize for Klipper, set acceleration and jerk in one command
@@ -10806,6 +10812,7 @@ void GCode::ooze_start_object(const PrintObject &object, size_t instance_id, con
     m_ooze_pending.reset();
     m_ooze_hover.reset();
     m_ooze_restart_extra.reset();
+    m_ooze_restart_dwell.reset();
     auto it = m_ooze_specs.find(&object);
     if (it == m_ooze_specs.end() || object_layer == nullptr)
         return;
@@ -10833,6 +10840,7 @@ void GCode::ooze_setup(const Print &print)
     m_ooze_pending.reset();
     m_ooze_hover.reset();
     m_ooze_restart_extra.reset();
+    m_ooze_restart_dwell.reset();
     m_ooze_last_stop = {nullptr, 0, -1};
     m_ooze_object_towers.clear();
     m_ooze_tower.reset();
@@ -11054,12 +11062,16 @@ std::string GCode::ooze_park(const Point &restart_point)
     // A purge leaves the normal restart; otherwise the test's extra length replaces it.
     if (!purge)
         m_ooze_restart_extra = stop.reprime;
+    if (stop.spec.restart_dwell > 0.)
+        m_ooze_restart_dwell = stop.spec.restart_dwell;
     return gcode;
 }
 
-// Wait over the object's ooze tower: retract, lift, wait over the tower's hollow so the drips fall
-// inside it (optionally cooler), then print the tower's layer, which wipes the nozzle and builds its
-// pressure back up, and come back down at the restart point.
+// Ooze cycle over the object's ooze tower, in the order a print would meet it: print the tower's layer, which
+// leaves the nozzle clean and primed, then retract and wait over the tower's hollow so the drips fall inside
+// it (optionally cooler and retracted further), wipe what hangs from the nozzle across the tower's walls, and
+// come back down at the restart point. The unretract that follows in _extrude() pushes the test's reprime,
+// and the nozzle waits there for the pressure to build before it moves.
 std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_point)
 {
     auto it = m_ooze_object_towers.find(std::make_pair(stop.object, stop.instance));
@@ -11078,8 +11090,9 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
     // Open this object's exclude-object block first, so skipping the object skips its stops and tower too.
     m_writer.add_object_change_labels(gcode);
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | tower %g s | %s %.3f mm\n", stop.name.c_str(), stop.layer + 1,
-                  stop.spec.wait_s, purge ? "purge" : "reprime", stop.reprime);
+    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | tower, then wait %g s | %s %.3f mm | settle %g s\n",
+                  stop.name.c_str(), stop.layer + 1, stop.spec.wait_s, purge ? "purge" : "reprime", stop.reprime,
+                  stop.spec.restart_dwell);
     gcode += buf;
     gcode += m_writer.retract();
 
@@ -11093,29 +11106,37 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
     gcode += m_writer.travel_to_z(safe_z, "ooze: lift clear of the print", true);
     double speed = 0.;
     gcode += this->ooze_fast_moves(speed);
-    gcode += m_writer.travel_to_xy(this->ooze_to_writer(tower.center()), speed, "ooze: to the ooze tower");
-    // Wait over the hollow, a little above the top of the tower.
-    const double top = restart_z - tower.layer_height();
-    gcode += m_writer.travel_to_z(top + ooze_tower_hover_height, "ooze: over the tower's hollow", true);
+
+    // 1. Print the tower's layer, from the loop next to the hollow outwards, starting and ending on the side
+    //    that faces the object. Every wait then starts from the same clean, primed nozzle.
+    const Vec2d  object_center = unscale(stop.object->instances()[stop.instance].shift);
+    const double angle  = std::atan2(object_center.y() - tower.center().y(), object_center.x() - tower.center().x());
+    const Vec2d  toward = Vec2d(std::cos(angle), std::sin(angle));
+    gcode += m_writer.travel_to_xy(this->ooze_to_writer(tower.center() + tower.next_loop_radius() * toward), speed,
+                                   "ooze: to the ooze tower");
+    gcode += m_writer.travel_to_z(restart_z, "ooze: down onto the tower", true);
+    gcode += this->ooze_tower_loops(tower, tower.loops_left(), angle);
+    gcode += m_writer.retract();
+
+    // 2. Wait over the hollow, a little above the tower, so what drips falls inside it.
+    gcode += m_writer.travel_to_z(restart_z + ooze_tower_hover_height, "ooze: lift over the tower", true);
+    gcode += m_writer.travel_to_xy(this->ooze_to_writer(tower.center()), speed, "ooze: over the tower's hollow");
     gcode += this->ooze_extra_retract(stop.spec);
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) (temp - cool), false);
     gcode += ooze_dwell_gcode(stop.spec.wait_s, m_ooze_has_chute || this->is_BBL_Printer());
-    // The tower is printed at full temperature, so it bonds and the nozzle cannot knock it loose.
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) temp, true);
     if (purge)
         gcode += this->ooze_purge(stop.reprime, "ooze: purge into the tower");
 
-    // Print the tower's layer, from the loop next to the hollow outwards, starting on the side that faces
-    // the object; what still hangs from the nozzle goes into the first loop.
-    const Vec2d  object_center = unscale(stop.object->instances()[stop.instance].shift);
-    const double angle = std::atan2(object_center.y() - tower.center().y(), object_center.x() - tower.center().x());
-    gcode += m_writer.travel_to_z(restart_z, "ooze: down into the tower", true);
-    gcode += this->ooze_tower_loops(tower, tower.loops_left(), angle);
-    gcode += m_writer.retract();
-    gcode += this->ooze_tower_wipe(tower);
+    // 3. Wipe what hangs from the nozzle across the top of the walls, towards the object.
+    gcode += m_writer.travel_to_z(restart_z, "ooze: down to the top of the tower", true);
+    gcode += m_writer.travel_to_xy(this->ooze_to_writer(tower.center() + (tower.shape().outer_radius() + tower.shape().line_width) * toward),
+                                   "ooze: wipe across the tower");
+    m_wipe.reset_path();
 
+    // 4. Back to the restart point.
     gcode += m_writer.travel_to_z(safe_z, "ooze: lift clear of the print", true);
     gcode += m_writer.travel_to_xy(this->point_to_gcode(restart_point), speed, "ooze: back to the restart point");
     gcode += m_writer.travel_to_z(restart_z, "ooze: down to the layer", true);
@@ -11126,6 +11147,8 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
     // A purge leaves the normal restart; otherwise the test's extra length replaces it.
     if (!purge)
         m_ooze_restart_extra = stop.reprime;
+    if (stop.spec.restart_dwell > 0.)
+        m_ooze_restart_dwell = stop.spec.restart_dwell;
     return gcode;
 }
 
@@ -11281,6 +11304,8 @@ std::string GCode::ooze_hover()
         gcode += m_writer.set_temperature((unsigned int) temp, true);
     gcode += m_writer.travel_to_z(z, "ooze: down to the layer", true);
     m_ooze_restart_extra = stop.reprime;
+    if (stop.spec.restart_dwell > 0.)
+        m_ooze_restart_dwell = stop.spec.restart_dwell;
     return gcode;
 }
 
