@@ -86,8 +86,15 @@ std::string slice_ooze_cube(const std::string &name, DynamicPrintConfig config, 
     return Test::gcode(print);
 }
 
+// Whether a line moves the nozzle or the filament (G0 to G3).
+bool is_move(const std::string &line)
+{
+    return line.size() > 2 && line[0] == 'G' && line[1] >= '0' && line[1] <= '3' && line[2] == ' ';
+}
+
 // Filament pushed back after each marker, as groups of positive E-only moves in a row (a restart can push the
-// retraction and then the reprime), up to count groups per marker. Comments and waits do not end a group.
+// retraction and then the reprime), up to count groups per marker. Only another move ends a group: comments,
+// waits and progress reports do not.
 std::vector<std::vector<double>> push_groups(const std::string &gcode, const std::string &marker, size_t count)
 {
     std::vector<std::vector<double>> out;
@@ -111,7 +118,7 @@ std::vector<std::vector<double>> push_groups(const std::string &gcode, const std
                 in_group = true;
             }
             groups.back() += std::stod(line.substr(4));
-        } else if (!(line.empty() || line[0] == ';' || line.rfind("M400", 0) == 0 || line.rfind("G4 ", 0) == 0))
+        } else if (is_move(line))
             in_group = false;
     }
     return out;
@@ -271,7 +278,7 @@ TEST_CASE("A tower stop prints the tower, waits over its hollow, wipes across it
                 stop.restart.push_back(std::stod(line.substr(4)));
             continue;
         }
-        if (!(line.empty() || line[0] == ';' || line.rfind("M400", 0) == 0 || line.rfind("G4 ", 0) == 0))
+        if (is_move(line))
             in_group = false;
         if (line.rfind("G1 ", 0) != 0)
             continue;
