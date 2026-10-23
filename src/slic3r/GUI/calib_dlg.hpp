@@ -152,6 +152,7 @@ protected:
     TextInput*       m_tiExtraRetract;
     TextInput*       m_tiSettle;
     TextInput*       m_tiWaits;
+    TextInput*       m_tiReprimeBase;
     TextInput*       m_tiReprimeStart;
     TextInput*       m_tiReprimeStep;
     TextInput*       m_tiReprimeCount;

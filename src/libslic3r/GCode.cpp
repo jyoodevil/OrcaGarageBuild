@@ -9300,13 +9300,20 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     // extra length in place of retract_restart_extra.
     if (m_ooze_hover)
         gcode += this->ooze_hover();
+    // A positive reprime is pushed after the retraction, at a speed the hot end can melt, since it can be many
+    // millimetres after a long wait; it replaces retract_restart_extra.
+    double ooze_reprime = 0.;
     if (m_ooze_restart_extra) {
-        m_writer.filament()->retract(0., *m_ooze_restart_extra);
+        if (*m_ooze_restart_extra > 0. && !m_config.use_firmware_retraction.value)
+            ooze_reprime = *m_ooze_restart_extra;
+        m_writer.filament()->retract(0., ooze_reprime > 0. ? 0. : *m_ooze_restart_extra);
         m_ooze_restart_extra.reset();
     }
 
     // compensate retraction
     gcode += this->unretract();
+    if (ooze_reprime > 0.)
+        gcode += this->ooze_reprime(ooze_reprime);
     // OrcaGarageBuild: after an ooze stop, give the reprime time to build the pressure up before moving.
     if (m_ooze_restart_dwell) {
         gcode += ooze_dwell_gcode(*m_ooze_restart_dwell, m_ooze_has_chute || this->is_BBL_Printer(), "ooze: let the pressure build");
@@ -10980,15 +10987,24 @@ std::string GCode::ooze_extra_retract(const OozeStopSpec &spec)
 }
 
 // Pushes the retraction back plus length, slowly enough for the hot end to melt it, and retracts again.
+// Speed to push filament into a nozzle that has drained: half the filament's maximum volumetric speed, so the
+// hot end melts it as it goes in, and never faster than the deretraction speed.
+double GCode::ooze_push_speed() const
+{
+    const Extruder *extruder = m_writer.filament();
+    const size_t    fi       = get_filament_config_index((int) extruder->id());
+    const double    diameter = m_config.filament_diameter.get_at(fi);
+    const double    area     = PI * diameter * diameter / 4.;
+    const double    max_flow = m_config.filament_max_volumetric_speed.get_at(fi);
+    const double    speed    = (max_flow > 0. && area > 0.) ? 0.5 * max_flow / area : 2.;
+    return std::clamp(speed, 0.5, std::max(0.5, double(extruder->deretract_speed())));
+}
+
+// Pushes the retraction back plus length, and retracts again.
 std::string GCode::ooze_purge(double length, const std::string &comment)
 {
-    Extruder    *extruder = m_writer.filament();
-    const size_t fi       = get_filament_config_index((int) extruder->id());
-    const double diameter = m_config.filament_diameter.get_at(fi);
-    const double area     = PI * diameter * diameter / 4.;
-    const double max_flow = m_config.filament_max_volumetric_speed.get_at(fi);
-    double       speed    = (max_flow > 0. && area > 0.) ? 0.5 * max_flow / area : 2.;
-    speed                 = std::clamp(speed, 0.5, std::max(0.5, double(extruder->deretract_speed())));
+    Extruder *extruder = m_writer.filament();
+    const double speed = this->ooze_push_speed();
     extruder->retract(0., length);
     extruder->unretract();
     GCodeG1Formatter w;
@@ -10996,6 +11012,19 @@ std::string GCode::ooze_purge(double length, const std::string &comment)
     w.emit_f(speed * 60.);
     w.emit_comment(true, comment);
     return w.string() + m_writer.retract();
+}
+
+// Pushes the reprime into the nozzle at the restart point, after the retraction is back.
+std::string GCode::ooze_reprime(double length)
+{
+    Extruder *extruder = m_writer.filament();
+    const double speed = this->ooze_push_speed();
+    extruder->extrude(length);
+    GCodeG1Formatter w;
+    w.emit_e(extruder->E());
+    w.emit_f(speed * 60.);
+    w.emit_comment(true, "ooze: reprime");
+    return w.string();
 }
 
 // Park over the purge chute: retract, lift clear of everything printed so far, wait (optionally cooler),

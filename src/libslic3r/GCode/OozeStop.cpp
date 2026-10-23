@@ -137,6 +137,7 @@ std::optional<OozeCalibLayout> ooze_calib_layout(const OozeCalibParams &p, const
 
     // Rows of waits, columns of reprime lengths.
     std::vector<double> waits;
+    // Ladder: reprime rates per column; reprime check: reprime lengths.
     std::vector<double> reprimes;
     OozeCalibLayout     layout;
     double              max_diameter = 0.;
@@ -146,9 +147,9 @@ std::optional<OozeCalibLayout> ooze_calib_layout(const OozeCalibParams &p, const
         if (waits.empty() || waits.size() > 6)
             return fail(_u8L("Use 1 to 6 wait times."));
         if (p.reprime_count < 1 || p.reprime_count > 10)
-            return fail(_u8L("Use 1 to 10 reprime lengths."));
+            return fail(_u8L("Use 1 to 10 reprime rates."));
         for (int i = 0; i < p.reprime_count; ++i)
-            reprimes.push_back(p.reprime_start + i * p.reprime_step);
+            reprimes.push_back(p.rate_start + i * p.rate_step);
         layout.layers = p.ladder_layers;
         layout.brim   = 3.;
         max_diameter  = 16.;
@@ -195,9 +196,9 @@ std::optional<OozeCalibLayout> ooze_calib_layout(const OozeCalibParams &p, const
         fit_x = 0.;
     layout.diameter = std::min({max_diameter, fit_x, fit_y});
     if (layout.diameter < min_diameter)
-        return fail(tower ? _u8L("The test and its ooze towers do not fit on the bed. Use fewer wait times or reprime "
-                                 "lengths, or a smaller ooze tower.") :
-                            _u8L("The test does not fit on the bed. Use fewer wait times or reprime lengths."));
+        return fail(tower ? _u8L("The test and its ooze towers do not fit on the bed. Use fewer wait times or "
+                                 "cylinders, or a smaller ooze tower.") :
+                            _u8L("The test does not fit on the bed. Use fewer wait times or cylinders."));
     if (tower)
         layout.tower_dy = 0.5 * layout.diameter + layout.brim + ooze_tower_clearance + 0.5 * footprint;
 
@@ -207,7 +208,7 @@ std::optional<OozeCalibLayout> ooze_calib_layout(const OozeCalibParams &p, const
         for (size_t col = 0; col < cols; ++col) {
             OozeStopSpec spec;
             spec.wait_s        = waits[row];
-            spec.reprime       = reprimes[col];
+            spec.reprime       = p.ladder ? p.reprime_base + reprimes[col] * waits[row] : reprimes[col];
             spec.hover         = p.stop == OozeStopKind::Hover;
             spec.tower         = tower;
             spec.purge         = !p.ladder && !spec.hover && p.purge;

@@ -86,22 +86,33 @@ std::string slice_ooze_cube(const std::string &name, DynamicPrintConfig config, 
     return Test::gcode(print);
 }
 
-// Positive E-only moves (pushes back after a retraction) after each "; OOZE stop" marker, up to count per stop.
-std::vector<std::vector<double>> pushes_after(const std::string &gcode, const std::string &marker, size_t count)
+// Filament pushed back after each marker, as groups of positive E-only moves in a row (a restart can push the
+// retraction and then the reprime), up to count groups per marker. Comments and waits do not end a group.
+std::vector<std::vector<double>> push_groups(const std::string &gcode, const std::string &marker, size_t count)
 {
     std::vector<std::vector<double>> out;
     std::istringstream               in(gcode);
     std::string                      line;
+    bool                             in_group = false;
     while (std::getline(in, line)) {
         if (line.rfind(marker, 0) == 0) {
             out.emplace_back();
+            in_group = false;
             continue;
         }
-        if (out.empty() || out.back().size() >= count || line.rfind("G1 E", 0) != 0)
+        if (out.empty())
             continue;
-        const double e = std::stod(line.substr(4));
-        if (e > 0.)
-            out.back().push_back(e);
+        std::vector<double> &groups = out.back();
+        if (line.rfind("G1 E", 0) == 0 && std::stod(line.substr(4)) > 0.) {
+            if (!in_group) {
+                if (groups.size() >= count)
+                    continue;
+                groups.push_back(0.);
+                in_group = true;
+            }
+            groups.back() += std::stod(line.substr(4));
+        } else if (!(line.empty() || line[0] == ';' || line.rfind("M400", 0) == 0 || line.rfind("G4 ", 0) == 0))
+            in_group = false;
     }
     return out;
 }
@@ -114,26 +125,13 @@ size_t count_of(const std::string &text, const std::string &token)
     return n;
 }
 
-// E of the first positive E-only move after each "; OOZE stop" marker: the restart after the stop.
+// Filament pushed back at the restart after each "; OOZE stop" marker, for stops that print nothing in between.
 std::vector<double> restart_lengths(const std::string &gcode)
 {
     std::vector<double> out;
-    std::istringstream  in(gcode);
-    std::string         line;
-    bool                after_stop = false;
-    while (std::getline(in, line)) {
-        if (line.rfind("; OOZE stop", 0) == 0) {
-            after_stop = true;
-            continue;
-        }
-        if (!after_stop || line.rfind("G1 E", 0) != 0)
-            continue;
-        const double e = std::stod(line.substr(4));
-        if (e > 0.) {
-            out.push_back(e);
-            after_stop = false;
-        }
-    }
+    for (const std::vector<double> &groups : push_groups(gcode, "; OOZE stop", 1))
+        if (!groups.empty())
+            out.push_back(groups.front());
     return out;
 }
 
@@ -230,22 +228,26 @@ TEST_CASE("A tower stop prints the tower, waits over its hollow, wipes across it
     CHECK(count_role_tags(gcode, "Prime tower") == ooze_layers);
 
     // Per stop: where the nozzle waits, where it goes next (the wipe), and the order of events after the stop:
-    // t = tower loops, w = the wait, r = the push at the restart, s = the settle.
+    // t = tower loops, w = the wait, r = the restart pushes, s = the settle.
     struct Stop
     {
-        Vec2d       wait;
-        Vec2d       wipe;
-        bool        wiped = false;
-        std::string events;
-        std::vector<double> pushes;
+        Vec2d               wait;
+        Vec2d               wipe;
+        bool                wiped = false;
+        std::string         events;
+        std::vector<double> restart; // the pushes of the second group, at the restart point
     };
     std::vector<Stop>  stops;
     std::istringstream in(gcode);
     std::string        line;
     double             x = 0., y = 0.;
+    int                groups   = 0;
+    bool               in_group = false;
     while (std::getline(in, line)) {
         if (line.rfind("; OOZE stop", 0) == 0) {
             stops.emplace_back();
+            groups   = 0;
+            in_group = false;
             continue;
         }
         if (stops.empty())
@@ -259,14 +261,18 @@ TEST_CASE("A tower stop prints the tower, waits over its hollow, wipes across it
         }
         if (line.rfind("G4 P1500", 0) == 0)
             stop.events += 's';
-        if (line.rfind("G1 E", 0) == 0) {
-            const double e = std::stod(line.substr(4));
-            if (e > 0. && stop.pushes.size() < 2) {
-                stop.pushes.push_back(e);
-                if (stop.pushes.size() == 2)
+        if (line.rfind("G1 E", 0) == 0 && std::stod(line.substr(4)) > 0.) {
+            if (!in_group) {
+                in_group = true;
+                if (++groups == 2)
                     stop.events += 'r';
             }
+            if (groups == 2)
+                stop.restart.push_back(std::stod(line.substr(4)));
+            continue;
         }
+        if (!(line.empty() || line[0] == ';' || line.rfind("M400", 0) == 0 || line.rfind("G4 ", 0) == 0))
+            in_group = false;
         if (line.rfind("G1 ", 0) != 0)
             continue;
         const size_t at_x = line.find(" X"), at_y = line.find(" Y");
@@ -288,10 +294,10 @@ TEST_CASE("A tower stop prints the tower, waits over its hollow, wipes across it
         CHECK(stop.wait.y() > ooze_cube_center.y() + 2. + ooze_tower_clearance);
         CHECK(stop.wipe.y() < stop.wait.y() - 12.5);
         CHECK(stop.wipe.y() > ooze_cube_center.y() + 2.);
-        // The tower takes back the normal retraction; the cube restarts with it, the extra 2 mm and the reprime.
-        REQUIRE(stop.pushes.size() == 2);
-        CHECK_THAT(stop.pushes[0], WithinAbs(ooze_retraction, 1e-4));
-        CHECK_THAT(stop.pushes[1], WithinAbs(ooze_retraction + 2. + 1., 1e-4));
+        // At the restart point the retraction and the extra 2 mm go back first, then the reprime on its own.
+        REQUIRE(stop.restart.size() == 2);
+        CHECK_THAT(stop.restart[0], WithinAbs(ooze_retraction + 2., 1e-4));
+        CHECK_THAT(stop.restart[1], WithinAbs(1., 1e-4));
     }
 }
 
@@ -338,7 +344,7 @@ TEST_CASE("Long travels between parts go through the print's ooze tower, which g
     CHECK(count_of(gcode, "; OOZE tower: rest of the layer") == ooze_layers);
 
     // After the tower, the part restarts with the retraction and the tower's reprime.
-    const std::vector<std::vector<double>> pushes = pushes_after(gcode, "; OOZE tower: visit", 2);
+    const std::vector<std::vector<double>> pushes = push_groups(gcode, "; OOZE tower: visit", 2);
     REQUIRE_FALSE(pushes.empty());
     for (const std::vector<double> &visit : pushes) {
         REQUIRE(visit.size() == 2);

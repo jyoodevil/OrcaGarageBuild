@@ -1912,16 +1912,18 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     const wxString retract_str       = _L("Retract further while waiting: ");
     const wxString settle_str        = _L("Settle after the reprime: ");
     const wxString waits_str         = _L("Wait times: ");
-    const wxString reprime_start_str = _L("First reprime length: ");
+    const wxString reprime_base_str  = _L("Base reprime: ");
+    const wxString rate_start_str    = _L("First reprime rate: ");
+    const wxString rate_step_str     = _L("Reprime rate step: ");
     const wxString reprime_step_str  = _L("Reprime step: ");
-    const wxString reprime_count_str = _L("Reprime lengths: ");
+    const wxString reprime_count_str = _L("Reprime rates: ");
     const wxString layers_str        = _L("Layers: ");
     const wxString wait_str          = _L("Wait time: ");
     const wxString reprime_mid_str   = _L("Middle reprime length: ");
     const wxString boxes_str         = _L("Cylinders: ");
-    const int      text_max          = GetTextMax(this, {cool_str, retract_str, settle_str, waits_str, reprime_start_str,
-                                                        reprime_step_str, reprime_count_str, layers_str, wait_str, reprime_mid_str,
-                                                        boxes_str});
+    const int      text_max          = GetTextMax(this, {cool_str, retract_str, settle_str, waits_str, reprime_base_str,
+                                                        rate_start_str, rate_step_str, reprime_step_str, reprime_count_str,
+                                                        layers_str, wait_str, reprime_mid_str, boxes_str});
     const wxSize   st_size(text_max, -1);
     const wxSize   ti_size = FromDIP(wxSize(120, -1));
 
@@ -1976,10 +1978,14 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     auto ladder_sizer = new wxStaticBoxSizer(m_ladder_box, wxVERTICAL);
     m_tiWaits         = add_row(ladder_sizer, waits_str, waits, _L("s"), list_validator);
     m_tiWaits->SetToolTip(_L("Comma-separated list of wait times, one row of cylinders each, front to back."));
-    m_tiReprimeStart  = add_row(ladder_sizer, reprime_start_str, wxString::FromDouble(m_params.reprime_start), _L("mm"), number_validator);
-    m_tiReprimeStep   = add_row(ladder_sizer, reprime_step_str, wxString::FromDouble(m_params.reprime_step), _L("mm"), number_validator);
+    m_tiReprimeBase   = add_row(ladder_sizer, reprime_base_str, wxString::FromDouble(m_params.reprime_base), _L("mm"), number_validator);
+    m_tiReprimeBase->SetToolTip(_L("Filament pushed back after every wait, whatever its length, on top of the retraction."));
+    m_tiReprimeStart  = add_row(ladder_sizer, rate_start_str, wxString::FromDouble(m_params.rate_start), _L("mm/s"), number_validator);
+    m_tiReprimeStart->SetToolTip(_L("Millimetres of filament pushed back per second of wait, for the first column. Each cylinder "
+                                    "reprimes the base reprime plus its column's rate times its row's wait."));
+    m_tiReprimeStep   = add_row(ladder_sizer, rate_step_str, wxString::FromDouble(m_params.rate_step), _L("mm/s"), number_validator);
     m_tiReprimeCount  = add_row(ladder_sizer, reprime_count_str, wxString::Format("%d", m_params.reprime_count), "", number_validator);
-    m_tiReprimeCount->SetToolTip(_L("Number of reprime lengths, one column of cylinders each, left to right."));
+    m_tiReprimeCount->SetToolTip(_L("Number of reprime rates, one column of cylinders each, left to right."));
     m_tiLadderLayers  = add_row(ladder_sizer, layers_str, wxString::Format("%d", m_params.ladder_layers), "", number_validator);
     v_sizer->Add(ladder_sizer, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
@@ -2037,7 +2043,7 @@ void Ooze_Reprime_Test_Dlg::update_controls()
     const bool hover  = m_rbStop->GetSelection() == int(OozeStopKind::Hover);
     const bool ladder = m_rbTest->GetSelection() == 0;
     m_tiCool->Enable(!hover);
-    for (TextInput* ti : {m_tiWaits, m_tiReprimeStart, m_tiReprimeStep, m_tiReprimeCount, m_tiLadderLayers})
+    for (TextInput* ti : {m_tiWaits, m_tiReprimeBase, m_tiReprimeStart, m_tiReprimeStep, m_tiReprimeCount, m_tiLadderLayers})
         ti->Enable(ladder);
     for (TextInput* ti : {m_tiWait, m_tiReprimeMid, m_tiCheckStep, m_tiBoxes, m_tiCheckLayers})
         ti->Enable(!ladder);
@@ -2084,7 +2090,8 @@ void Ooze_Reprime_Test_Dlg::on_start(wxCommandEvent& event)
         else
             ok = false;
     }
-    ok = ok && read(m_tiReprimeStart, params.reprime_start) && read(m_tiReprimeStep, params.reprime_step) &&
+    ok = ok && read(m_tiReprimeBase, params.reprime_base) && read(m_tiReprimeStart, params.rate_start) &&
+         read(m_tiReprimeStep, params.rate_step) &&
          read_int(m_tiReprimeCount, params.reprime_count) && read_int(m_tiLadderLayers, params.ladder_layers) &&
          read(m_tiWait, params.wait) && read(m_tiReprimeMid, params.reprime_mid) && read(m_tiCheckStep, params.check_step) &&
          read_int(m_tiBoxes, params.boxes) && read_int(m_tiCheckLayers, params.check_layers);

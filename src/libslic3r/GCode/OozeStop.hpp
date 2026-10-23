@@ -91,9 +91,11 @@ std::string ooze_dwell_gcode(double seconds, bool bambu_firmware, const char *co
 
 // ---- Ooze & reprime calibration plate ----------------------------------------------
 //
-// Ooze ladder: one row of cylinders per wait time, one column per reprime length. Every
-//   layer of every cylinder starts after a stop, so each seam shows whether that reprime
-//   refills what the nozzle lost during that wait (a gap: too little; a blob: too much).
+// Ooze ladder: one row of cylinders per wait time, one column per reprime rate. A cylinder's
+//   reprime is the base reprime plus its column's rate times its row's wait, so each column
+//   tests one ooze rate at every wait. Every layer of every cylinder starts after a stop, so
+//   each seam shows whether that reprime refills what the nozzle lost during that wait (a
+//   gap: too little; a blob: too much).
 // Reprime check: one row of taller cylinders, all with the same wait, around one reprime
 //   length, to confirm a value from the ladder over many layers.
 enum class OozeStopKind
@@ -116,9 +118,10 @@ struct OozeCalibParams
     double              tower_footprint = 0.;
     // Ooze ladder
     std::vector<double> waits         {5., 15., 30., 60.};
-    double              reprime_start = 0.;
-    double              reprime_step  = 1.;
-    int                 reprime_count = 6;
+    double              reprime_base  = 3.;  // mm pushed after any wait
+    double              rate_start    = 0.1; // mm of filament per second of wait, first column
+    double              rate_step     = 0.1;
+    int                 reprime_count = 6;   // columns
     int                 ladder_layers = 4;
     // Reprime check
     double              wait          = 30.;

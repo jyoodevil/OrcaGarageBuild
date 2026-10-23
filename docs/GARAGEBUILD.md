@@ -23,9 +23,10 @@ push the right amount back in and a print knows when to clean the nozzle on an o
 Open **Calibration > Ooze and reprime**. There are two tests:
 
 - **Ooze ladder**: a grid of short hollow cylinders. Rows run front to back by wait time, and columns run left to
-  right by reprime length. Before every layer of every cylinder, the nozzle stops for that row's wait, then restarts
-  with that column's reprime length. Look at the seam on the back of each cylinder: a gap means too little reprime
-  and a blob means too much. The best column in each row is the reprime for that wait.
+  right by reprime rate. Before every layer of every cylinder, the nozzle stops for that row's wait, then restarts
+  with a reprime of the **base reprime** plus the column's rate times the row's wait, so each column tests one ooze
+  rate at every wait (the cylinder's name shows its total). Look at the seam on the back of each cylinder: a gap
+  means too little reprime and a blob means too much.
 - **Reprime check**: one row of taller cylinders that all wait the same time, with reprime lengths around one
   value. Use it to confirm a value from the ladder over many layers. It can also purge the reprime into the tower or
   chute and restart normally, which tests priming there instead of at the part.
@@ -42,8 +43,9 @@ restart* (`retract_restart_extra`) for that restart only.
   2. Retract, lift 2 mm and wait over the tower's hollow centre for the row's wait time; what drips falls inside.
   3. Come down to the top of the tower and wipe across its walls towards the cylinder, catching what hangs from the
      nozzle.
-  4. Go back to the cylinder, push the retraction plus the column's reprime, and wait there for the **settle** time
-     so the pressure builds before the nozzle moves.
+  4. Go back down onto the cylinder's restart point, push the retraction back, then push the reprime there at half
+     the filament's maximum volumetric speed, so a reprime of many millimetres melts as it goes in instead of
+     grinding the filament. Then wait for the **settle** time so the pressure builds before the nozzle moves.
 
   The towers show up when the plate is sliced; their size comes from the print settings under
   **Others > Ooze tower**.
@@ -57,8 +59,9 @@ Every stop can also cool while it waits and retract further while it waits (**Re
 pushing it back on restart. Both are off by default, so a wait behaves like a travel. A deeper retraction oozes less,
 but too deep can pull molten filament into the cold zone.
 
-The defaults are made for finding the reprime a travel needs: waits of 5, 15, 30 and 60 seconds, reprimes from 0 to
-5 mm in 1 mm steps, and a 1 second settle.
+The defaults are made for finding the reprime a travel needs: waits of 5, 15, 30 and 60 seconds, a 3 mm base
+reprime, reprime rates from 0.1 to 0.6 mm per second of wait, and a 1 second settle. A 60 second wait then reprimes
+from 9 to 39 mm.
 
 ### Reading the ladder
 
@@ -69,9 +72,12 @@ first part of the loop after the restart on each layer:
 - **Blob or bulge** at the restart: too much reprime.
 - **Even line**: the right reprime for that row's wait.
 
-Go row by row (front to back is shortest to longest wait) and note the column with the even line. That gives the
-reprime for each ooze time, which is what a travel of that length needs. If every column of a row is starved, run it
-again with larger reprimes or a longer settle; if every column blobs, use smaller ones.
+Go row by row (front to back is shortest to longest wait) and note the column with the even line, and the reprime
+in its name. If the same column wins in every row, its rate is the nozzle's ooze rate and the base reprime is right:
+a restart after a wait of t seconds needs the base plus rate times t. If the short waits want a faster column than
+the long ones, raise the base reprime; if they want a slower one, lower it. Either way, the winning reprimes against
+their waits make a straight line whose slope is the ooze rate and whose start is the base. If every column of a row
+is starved, run it again with higher rates or a longer settle; if every column blobs, use lower rates.
 
 Waits use `M400 S<seconds>` on Bambu printers, as Bambu's own G-code does, and `G4 P<milliseconds>` elsewhere.
 
@@ -144,10 +150,10 @@ the tests are tagged `[ReportedNozzle]`.
 
 ## Next update list
 
-- **Reprime by travel time.** Feed the ladder's results back into normal prints: a table of ooze times and reprimes
-  (for example `5:1, 15:2, 30:3`), so every restart after a travel pushes the reprime for that travel's length,
-  interpolated between the table's rows, followed by the settle time. Long travels that leave the part would still go
-  through the ooze tower; travels over infill would wipe there and use the table.
+- **Reprime by travel time.** Feed the ladder's results back into normal prints: a base reprime and an ooze rate
+  from the ladder, so every restart after a travel pushes the base plus the rate times the travel's time, at a
+  meltable speed, followed by the settle time. Long travels that leave the part would still go through the ooze
+  tower; travels over infill would wipe there and use the same reprime.
 
 - **Show the ooze towers in the Prepare view.** Draw the print's ooze tower and the towers behind ooze test objects on
   the plate, let the print's tower be dragged into place like the prime tower, and have Arrange leave room for them.

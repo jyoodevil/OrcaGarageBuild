@@ -892,7 +892,9 @@ protected:
     // Fast moves for trips that are not part of a measured wait; returns the G-code and sets the speed.
     std::string ooze_fast_moves(double &speed);
     std::string ooze_extra_retract(const OozeStopSpec &spec);
+    double      ooze_push_speed() const;
     std::string ooze_purge(double length, const std::string &comment);
+    std::string ooze_reprime(double length);
     // Prints up to count loops of the tower's current layer, starting at start_angle; ends unretracted.
     std::string ooze_tower_loops(OozeTower &tower, size_t count, double start_angle);
     // Wipes along the loop under the nozzle, retracted.

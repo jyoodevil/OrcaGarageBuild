@@ -124,13 +124,14 @@ TEST_CASE("Ooze waits use M400 on Bambu firmware and G4 elsewhere", "[OozeStop]"
     CHECK(ooze_dwell_gcode(0., true).empty());
 }
 
-TEST_CASE("The ooze ladder puts one row per wait and one column per reprime on the bed", "[OozeStop]")
+TEST_CASE("The ooze ladder puts one row per wait and one column per reprime rate on the bed", "[OozeStop]")
 {
     OozeCalibParams params;
     params.stop          = OozeStopKind::Chute;
     params.waits         = {5., 20., 80.};
-    params.reprime_start = 0.;
-    params.reprime_step  = 0.5;
+    params.reprime_base  = 0.5;
+    params.rate_start    = 0.;
+    params.rate_step     = 0.1;
     params.reprime_count = 4;
     params.ladder_layers = 2;
     std::string error;
@@ -148,11 +149,16 @@ TEST_CASE("The ooze ladder puts one row per wait and one column per reprime on t
         CHECK(object.center.y() - layout->diameter / 2. - layout->brim >= 0.);
         CHECK(object.center.y() + layout->diameter / 2. + layout->brim <= 256.);
     }
-    // Front row waits 5 s, last column reprimes 1.5 mm.
+    // Each cylinder reprimes the base plus its column's rate times its row's wait. The last column's rate is
+    // 0.3 mm/s: 0.5 + 0.3 * 5 at the front, 0.5 + 0.3 * 80 at the back.
     const std::optional<OozeStopSpec> front_right = parse_ooze_object_name(layout->objects[3].name);
+    const std::optional<OozeStopSpec> back_right  = parse_ooze_object_name(layout->objects[11].name);
     REQUIRE(front_right.has_value());
+    REQUIRE(back_right.has_value());
     CHECK_THAT(front_right->wait_s, WithinAbs(5., 1e-9));
-    CHECK_THAT(front_right->reprime, WithinAbs(1.5, 1e-9));
+    CHECK_THAT(front_right->reprime, WithinAbs(2., 1e-9));
+    CHECK_THAT(back_right->wait_s, WithinAbs(80., 1e-9));
+    CHECK_THAT(back_right->reprime, WithinAbs(24.5, 1e-9));
     CHECK(layout->objects[3].center.x() > layout->objects[0].center.x());
     CHECK(layout->objects[4].center.y() > layout->objects[0].center.y());
 }

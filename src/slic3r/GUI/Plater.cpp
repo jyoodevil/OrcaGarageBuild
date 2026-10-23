@@ -17840,9 +17840,10 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
     const wxString how_to_read = params.ladder ?
         // TRN: %1% is the number of stops, %2% the minutes spent waiting.
         format_wxstr(_L("Ooze ladder: %1% stops, about %2% minutes of waiting. Rows run front to back by wait time and "
-                        "columns left to right by reprime length. Each restart is on the back of its cylinder: a gap "
-                        "means too little reprime, a blob too much. With ooze towers, each cylinder's tower is printed "
-                        "behind it during slicing."),
+                        "columns left to right by reprime rate; each cylinder reprimes the base reprime plus its rate "
+                        "times its wait, and its name shows the total. Each restart is on the back of its cylinder: a "
+                        "gap means too little reprime, a blob too much. With ooze towers, each cylinder's tower is "
+                        "printed behind it during slicing."),
                      layout->stops, int(std::lround(layout->wait_total / 60.))) :
         format_wxstr(_L("Reprime check: %1% stops, about %2% minutes of waiting. Reprime lengths rise from left to "
                         "right. Pick the cylinder whose seam at the back is neither gapped nor blobbed."),
