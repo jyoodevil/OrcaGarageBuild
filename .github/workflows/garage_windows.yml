@@ -12,6 +12,7 @@ on:
       - 'deps_src/**'
       - 'cmake/**'
       - 'src/**'
+      - 'tests/**'
       - '**/CMakeLists.txt'
       - 'version.inc'
       - 'localization/**'
