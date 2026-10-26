@@ -10,7 +10,9 @@
 
 #include "test_helpers.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -317,8 +319,9 @@ TEST_CASE("An ooze tower that does not fit on the bed is an error", "[OozeStop][
 
 namespace {
 
-// Two 4 mm cubes 140 mm apart, with the print's ooze tower between and behind them.
-std::string slice_two_cubes_with_ooze_tower(bool tower)
+// Two 4 mm cubes 140 mm apart at 50 mm/s travel, so a trip between them takes about 2.8 s, optionally with the print's
+// ooze tower between and behind them and with reprime by travel time.
+std::string slice_two_cubes(bool tower, bool reprime)
 {
     DynamicPrintConfig config = ooze_config();
     config.set_deserialize_strict({
@@ -326,9 +329,15 @@ std::string slice_two_cubes_with_ooze_tower(bool tower)
         {"ooze_tower", tower ? 1 : 0},
         {"ooze_tower_x", 100},
         {"ooze_tower_y", 140},
-        // A trip between the cubes takes 2.8 s, from the tower to either cube under 1.4 s.
         {"ooze_tower_travel_time", 2},
-        {"ooze_tower_reprime", 1.5},
+        // Reprime 1 mm plus 0.5 mm per second off the print, for at most 2 s.
+        {"ooze_reprime", reprime ? 1 : 0},
+        {"ooze_reprime_base", 1},
+        {"ooze_reprime_amount", 0.5},
+        {"ooze_reprime_interval", 1},
+        {"ooze_reprime_time_limit", 2},
+        {"ooze_reprime_min_time", 1},
+        {"ooze_reprime_settle", 0.5},
     });
     Print print;
     Model model;
@@ -340,28 +349,79 @@ std::string slice_two_cubes_with_ooze_tower(bool tower)
     return Test::gcode(print);
 }
 
+// The "; OOZE reprime: <t> s off the print, reprime <r> mm" notes, and the first push after each.
+struct ReprimeNote
+{
+    double time;
+    double reprime;
+    double pushed = 0.;
+};
+std::vector<ReprimeNote> reprime_notes(const std::string &gcode)
+{
+    std::vector<ReprimeNote> out;
+    std::istringstream       in(gcode);
+    std::string              line;
+    bool                     want_push = false;
+    while (std::getline(in, line)) {
+        double t = 0., r = 0.;
+        if (std::sscanf(line.c_str(), "; OOZE reprime: %lf s off the print, reprime %lf mm", &t, &r) == 2) {
+            out.push_back({t, r});
+            want_push = true;
+        } else if (want_push && line.rfind("G1 E", 0) == 0) {
+            out.back().pushed = std::stod(line.substr(4));
+            want_push         = false;
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 TEST_CASE("Long travels between parts go through the print's ooze tower, which grows every layer", "[OozeStop][OozeTower]")
 {
-    const std::string gcode = slice_two_cubes_with_ooze_tower(true);
+    const std::string gcode = slice_two_cubes(true, false);
 
     // Each layer travels once between the cubes, and the rest of the tower's layer is printed at its end.
     CHECK(count_of(gcode, "; OOZE tower: visit") >= ooze_layers);
     CHECK(count_of(gcode, "; OOZE tower: rest of the layer") == ooze_layers);
+    // Each visit lets the nozzle drain over the tower for the ooze time limit.
+    CHECK(count_of(gcode, "G4 P2000") == count_of(gcode, "; OOZE tower: visit"));
 
-    // After the tower, the part restarts with the retraction and the tower's reprime.
+    // After the tower the part restarts with the retraction and the reprime for a drained nozzle: 1 + 0.5 * 2 mm,
+    // even though reprime by travel time is off. Then it settles.
     const std::vector<std::vector<double>> pushes = push_groups(gcode, "; OOZE tower: visit", 2);
     REQUIRE_FALSE(pushes.empty());
     for (const std::vector<double> &visit : pushes) {
         REQUIRE(visit.size() == 2);
-        CHECK_THAT(visit[1], WithinAbs(ooze_retraction + 1.5, 1e-4));
+        CHECK_THAT(visit[1], WithinAbs(ooze_retraction + 2., 1e-4));
     }
+    CHECK(count_of(gcode, "G4 P500") >= count_of(gcode, "; OOZE tower: visit"));
 }
 
 TEST_CASE("Without the ooze tower option, travels go straight", "[OozeStop][OozeTower]")
 {
-    const std::string gcode = slice_two_cubes_with_ooze_tower(false);
+    const std::string gcode = slice_two_cubes(false, false);
     CHECK(gcode.find("; OOZE tower") == std::string::npos);
     CHECK(count_role_tags(gcode, "Prime tower") == 0);
+    CHECK(gcode.find("; OOZE reprime") == std::string::npos);
+}
+
+TEST_CASE("A restart after a long travel reprimes by the travel's time", "[OozeStop][OozeReprime]")
+{
+    const std::string              gcode = slice_two_cubes(false, true);
+    const std::vector<ReprimeNote> notes = reprime_notes(gcode);
+
+    // Every travel between the cubes takes more than 2 s; shorter travels inside a cube restart normally.
+    size_t long_travels = 0;
+    for (const ReprimeNote &note : notes) {
+        INFO("travel " << note.time << " s");
+        CHECK(note.time >= 1.);
+        CHECK_THAT(note.reprime, WithinAbs(1. + 0.5 * std::min(note.time, 2.), 1e-3));
+        CHECK_THAT(note.pushed, WithinAbs(note.reprime, 1e-3));
+        if (note.time > 2.)
+            ++long_travels;
+    }
+    CHECK(long_travels >= size_t(ooze_layers - 1));
+    // Each reprime settles before the nozzle moves.
+    CHECK(count_of(gcode, "G4 P500") == notes.size());
 }

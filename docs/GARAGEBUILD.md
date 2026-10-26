@@ -6,7 +6,7 @@ OrcaSlicer with these additions:
 - **Wave overhangs** from [OrcaSlicer-WaveOverhangs](https://github.com/dennisklappe/OrcaSlicer-WaveOverhangs)
   (settings: [WAVE_OVERHANG_SETTINGS.md](WAVE_OVERHANG_SETTINGS.md)).
 - **Ooze and reprime calibration**, for large nozzles that lose pressure while they wait.
-- **Ooze tower**, which cleans and primes the nozzle on long travels.
+- **Ooze control** for normal prints: reprime by travel time, and an ooze tower that long travels go through.
 - **Report the variant's nozzle to the printer**, for nozzle sizes a Bambu Lab printer can't be set to.
 
 It installs as *OrcaGarageBuild* (`orca-garagebuild.exe`). It keeps its settings in its own folder
@@ -117,24 +117,50 @@ Files sliced with stops carry `; OOZE_POST_DONE native` in the header, so the ol
 post-processing script leaves them alone. The code is in `src/libslic3r/GCode/OozeStop.*`, `GCode/OozeTower.*` and
 the `ooze_*` functions in `GCode.cpp`. The tests are tagged `[OozeStop]`.
 
-## Ooze tower for normal prints
+## Ooze control for normal prints
 
-**Print settings > Others > Ooze tower** adds one ooze tower to a normal print, at the X and Y given there. A travel
-goes through it when all of these hold:
+Two groups under **Print settings > Others** use the ooze ladder's results in normal prints.
 
-- the travel takes longer than **Travel time** at the travel speed;
-- it leaves the inside of the part (travels that stay over internal infill hide their strings);
-- the tower is close enough that the trip from the tower to where printing resumes is shorter than **Travel time**.
-  Otherwise the visit would not help, so place the tower next to the part.
+### Ooze reprime
 
-Each visit prints one loop of the tower's current layer, which wipes the nozzle and builds its pressure back up, then
-the nozzle goes on to the part and restarts with **Reprime after the tower** in place of the extra length on
-restart. At the end of every layer the loops the layer has left are printed, so the tower grows with the print and
-is always solid. Its first layer has the brim loops for grip. The tower needs layer-by-layer printing (not by object)
-and does not work in spiral vase mode.
+**Reprime after travels** pushes back what the nozzle oozed during a travel, by how long the travel took. The
+travel's time is its path length at the travel speed, including any detour that **Avoid crossing walls** adds. After a
+travel of at least **Minimum travel time**, printing restarts with:
 
-Set the values from the calibration: **Travel time** from the ladder in Hover mode (the longest wait whose seam is
-still clean with some reprime), and **Reprime after the tower** from the ladder with towers.
+    reprime = Base reprime + (Reprime / Per) × min(travel time, Ooze time limit)
+
+in place of the extra length on restart. The reprime is pushed after the retraction goes back, at half the
+filament's maximum volumetric speed so it melts as it goes in, and then the nozzle waits **Settle after the
+reprime** before it moves. Shorter travels restart normally. The travel from the start G-code to the first part is
+not counted.
+
+From the ladder: **Base reprime** is the ladder's base reprime (or the start of the line through the winners),
+**Reprime** per **Per** is the winning rate (for example 0.2 mm per 1 s), **Ooze time limit** is how long the nozzle
+keeps oozing before it runs dry (the long-wait row and the tower weights show it; 0 means no limit), and **Settle**
+is the ladder's settle time.
+
+Travels that stay inside the part leave their drips on the infill. Turn on **Avoid crossing walls** so travels stay
+inside the part, and **Reduce infill retraction** if the drips should go into the infill without a retraction. The
+reprime counts the time either way.
+
+### Ooze tower
+
+**Ooze tower** adds one ooze tower to the print, at the X and Y given there; place it next to the part. A travel goes
+through it when it takes longer than **Travel time** at the travel speed and leaves the inside of the part (travels
+that stay over infill hide their drips there). This is for parts with little infill, mostly walls, or separate
+sections far apart.
+
+On each visit the nozzle:
+
+1. Prints one loop of the tower's current layer, which wipes off what it oozed on the way.
+2. Retracts and waits over the tower's hollow for the **Ooze time limit**, so it drains there instead of on the part.
+3. Comes down and wipes across the tower's walls towards where it is going.
+4. Travels on to the part and restarts with the reprime for a drained nozzle (the formula above with the full time
+   limit), then settles. This happens even when **Reprime after travels** is off.
+
+At the end of every layer the loops the layer has left are printed, so the tower grows with the print and is always
+solid. Its first layer has the brim loops for grip. The tower needs layer-by-layer printing (not by object) and does
+not work in spiral vase mode. The tests are tagged `[OozeTower]` and `[OozeReprime]`.
 
 ## Odd nozzle sizes on Bambu Lab printers
 
@@ -159,10 +185,9 @@ the tests are tagged `[ReportedNozzle]`.
 
 ## Next update list
 
-- **Reprime by travel time.** Feed the ladder's results back into normal prints: a base reprime and an ooze rate
-  from the ladder, so every restart after a travel pushes the base plus the rate times the travel's time, at a
-  meltable speed, followed by the settle time. Long travels that leave the part would still go through the ooze
-  tower; travels over infill would wipe there and use the same reprime.
+- **Wipe over infill before a travel.** Before a long travel inside the part, move the nozzle over the nearest
+  internal infill and wipe there, rather than along the last path (which can be the outer wall), so nothing it
+  carries ends up on a wall.
 
 - **Show the ooze towers in the Prepare view.** Draw the print's ooze tower and the towers behind ooze test objects on
   the plate, let the print's tower be dragged into place like the prime tower, and have Arrange leave room for them.

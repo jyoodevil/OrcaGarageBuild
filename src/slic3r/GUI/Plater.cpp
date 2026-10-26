@@ -17784,8 +17784,9 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
 
     // Each layer starts with a stop, which a spiral vase would never make.
     print_config->set_key_value("spiral_mode", new ConfigOptionBool(false));
-    // The cylinders have their own towers; a tower for the whole print would only get in the way.
+    // The cylinders have their own towers and reprimes; the print-wide ones would only get in the way.
     print_config->set_key_value("ooze_tower", new ConfigOptionBool(false));
+    print_config->set_key_value("ooze_reprime", new ConfigOptionBool(false));
     print_config->set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
     // Firmware retraction ignores the restart length the test sets.
     printer_config->set_key_value("use_firmware_retraction", new ConfigOptionBool(false));

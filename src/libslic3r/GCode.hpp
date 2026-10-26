@@ -884,6 +884,13 @@ protected:
     std::optional<OozeTower>            m_ooze_tower;
     double                              m_ooze_tower_layer_z = 0.;
     bool                                m_ooze_tower_busy    = false;
+    // Reprime by travel time (ooze_reprime): seconds the nozzle has spent off the print since it last extruded,
+    // whether the next restart must reprime by them even when ooze_reprime is off (after the ooze tower), and
+    // whether anything has been extruded yet (the travel from the start G-code is not timed).
+    double                              m_ooze_travel_time     = 0.;
+    bool                                m_ooze_reprime_forced  = false;
+    bool                                m_ooze_extruded        = false;
+    double      ooze_travel_speed();
     void        ooze_setup(const Print &print);
     void        ooze_start_object(const PrintObject &object, size_t instance_id, const Layer *object_layer);
     std::string ooze_park(const Point &restart_point);

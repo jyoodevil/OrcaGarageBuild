@@ -8773,12 +8773,13 @@ void PrintConfigDef::init_fff_params()
     // OrcaGarageBuild: ooze tower (GCode/OozeTower.hpp).
     def = this->add("ooze_tower", coBool);
     def->label = L("Ooze tower");
-    def->tooltip = L("Print a hollow tower next to the part and go through it on long travels, so what the nozzle oozes "
-                     "while it travels ends up on the tower instead of the part. A travel goes through the tower when it "
-                     "takes longer than the travel time below and leaves the inside of the part, and when the tower is "
-                     "close enough to where the nozzle is going. Each visit prints one loop of the tower, which wipes "
-                     "the nozzle and builds its pressure back up; the loops a layer has left are printed at the end of "
-                     "the layer, so the tower grows with the part.");
+    def->tooltip = L("Print a hollow tower next to the part and go through it on long travels that leave the part, so "
+                     "the nozzle oozes onto the tower instead of the part. A travel goes through the tower when it takes "
+                     "longer than the travel time below and leaves the inside of the part. On each visit the nozzle prints "
+                     "one loop of the tower, which wipes it, then waits over the tower's hollow for the ooze time limit "
+                     "(under Ooze reprime) so it drains there, wipes across the tower again and goes on to the part, where "
+                     "it reprimes what it lost. The loops a layer has left are printed at the end of the layer, so the "
+                     "tower grows with the part.");
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionBool(false));
 
@@ -8833,11 +8834,67 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(5.));
 
-    def = this->add("ooze_tower_reprime", coFloat);
-    def->label = L("Reprime after the tower");
-    def->tooltip = L("Extra length of filament pushed in when printing restarts after a visit to the ooze tower, in "
-                     "place of the extra length on restart. The ooze ladder with towers shows the right value.");
+    // OrcaGarageBuild: reprime by travel time.
+    def = this->add("ooze_reprime", coBool);
+    def->label = L("Reprime after travels");
+    def->tooltip = L("Push back what the nozzle oozes during a travel, by how long the travel takes: after a travel of "
+                     "at least the minimum travel time, printing restarts with the base reprime plus the reprime rate "
+                     "times the travel's time (up to the ooze time limit), in place of the extra length on restart. The "
+                     "reprime is pushed at a speed the hot end can melt, then the nozzle settles before it moves. A "
+                     "visit to the ooze tower always restarts this way. The ooze ladder gives the values.");
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("ooze_reprime_base", coFloat);
+    def->label = L("Base reprime");
+    def->tooltip = L("Filament pushed back after every travel that takes at least the minimum travel time, whatever its "
+                     "length. The ooze ladder's base reprime.");
     def->sidetext = L("mm");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("ooze_reprime_amount", coFloat);
+    def->label = L("Reprime");
+    def->tooltip = L("Filament pushed back for each interval of travel time below: the nozzle's ooze rate. The ooze "
+                     "ladder's best rate in mm/s is this amount per 1 second.");
+    def->sidetext = L("mm");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("ooze_reprime_interval", coFloat);
+    def->label = L("Per");
+    def->tooltip = L("Travel time that the reprime above is for.");
+    def->sidetext = L("s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(1.));
+
+    def = this->add("ooze_reprime_time_limit", coFloat);
+    def->label = L("Ooze time limit");
+    def->tooltip = L("How long the nozzle keeps oozing before it runs dry. A longer travel reprimes as if it took this "
+                     "long, and the nozzle waits this long over the ooze tower's hollow on each visit. 0 for no limit, "
+                     "and no wait at the tower.");
+    def->sidetext = L("s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(60.));
+
+    def = this->add("ooze_reprime_min_time", coFloat);
+    def->label = L("Minimum travel time");
+    def->tooltip = L("Travels shorter than this restart normally, with the extra length on restart.");
+    def->sidetext = L("s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(1.));
+
+    def = this->add("ooze_reprime_settle", coFloat);
+    def->label = L("Settle after the reprime");
+    def->tooltip = L("Time the nozzle waits at the restart point after the reprime, so the pressure builds up before it "
+                     "prints. Use the settle time the ooze ladder was printed with.");
+    def->sidetext = L("s");
+    def->min = 0.;
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(0.));
 
@@ -10493,7 +10550,7 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
     static std::set<std::string> ignore = {
         "acceleration", "scale", "rotate", "duplicate", "duplicate_grid",
         "bed_size",
-        "print_center", "g0", "wipe_tower_per_color_wipe", 
+        "print_center", "g0", "wipe_tower_per_color_wipe", "ooze_tower_reprime", 
         "support_sharp_tails","support_remove_small_overhangs", "support_with_sheath",
         "tree_support_collision_resolution", "tree_support_with_infill",
         "max_volumetric_speed", "max_print_speed",
