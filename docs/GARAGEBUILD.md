@@ -79,6 +79,15 @@ the long ones, raise the base reprime; if they want a slower one, lower it. Eith
 their waits make a straight line whose slope is the ooze rate and whose start is the base. If every column of a row
 is starved, run it again with higher rates or a longer settle; if every column blobs, use lower rates.
 
+The cylinders are as large as the bed allows, up to 25 mm. Four rows of towers leave room for about 11 mm, which is
+only a few lines across with a large nozzle, so use the first run to find the region that works, then run the ladder
+again with three waits and a narrower range of rates around it for cylinders twice that size.
+
+The drips in each tower's hollow are the ooze itself: everything that came out during that row's waits. Weighing
+them gives a check on the ladder's rate: mm of filament per second = grams / density in g/cm³ × 1000 / filament
+cross-section in mm² (2.405 for 1.75 mm filament) / total seconds waited (layers × wait). What still hangs from the
+nozzle is wiped onto the wall instead, so this reads a little low.
+
 Waits use `M400 S<seconds>` on Bambu printers, as Bambu's own G-code does, and `G4 P<milliseconds>` elsewhere.
 
 ### Object names

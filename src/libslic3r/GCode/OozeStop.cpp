@@ -152,7 +152,8 @@ std::optional<OozeCalibLayout> ooze_calib_layout(const OozeCalibParams &p, const
             reprimes.push_back(p.rate_start + i * p.rate_step);
         layout.layers = p.ladder_layers;
         layout.brim   = 3.;
-        max_diameter  = 16.;
+        // As large as the grid allows: a big nozzle makes a small cylinder hard to read.
+        max_diameter  = 25.;
         min_diameter  = 10.;
     } else {
         waits = {p.wait};
