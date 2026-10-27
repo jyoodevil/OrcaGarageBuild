@@ -9301,31 +9301,37 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     if (m_ooze_hover)
         gcode += this->ooze_hover();
     // A positive reprime is pushed after the retraction, at a speed the hot end can melt, since it can be many
-    // millimetres after a long wait; it replaces retract_restart_extra.
-    double      ooze_reprime = 0.;
+    // millimetres after a long wait; it replaces retract_restart_extra. A start boost then goes into the first
+    // part of the line (see ooze_boost_extrude()).
+    const bool  ooze_can_push = !m_config.use_firmware_retraction.value;
+    double      ooze_reprime  = 0.;
+    double      ooze_boost    = 0.;
     std::string ooze_reprime_note;
     if (m_ooze_restart_extra) {
-        if (*m_ooze_restart_extra > 0. && !m_config.use_firmware_retraction.value)
+        if (*m_ooze_restart_extra > 0. && ooze_can_push)
             ooze_reprime = *m_ooze_restart_extra;
         m_writer.filament()->retract(0., ooze_reprime > 0. ? 0. : *m_ooze_restart_extra);
-        m_ooze_restart_extra.reset();
-    } else if ((m_ooze_reprime_forced || m_config.ooze_reprime.value) && !m_config.use_firmware_retraction.value &&
-               (m_ooze_reprime_forced || m_ooze_travel_time >= m_config.ooze_reprime_min_time.value)) {
-        // Reprime by travel time: the base plus the ooze rate times the time off the print, up to the time limit.
-        const double interval = m_config.ooze_reprime_interval.value;
-        const double rate     = interval > 0. ? m_config.ooze_reprime_amount.value / interval : 0.;
-        const double limit    = m_config.ooze_reprime_time_limit.value;
-        const double t        = limit > 0. ? std::min(m_ooze_travel_time, limit) : m_ooze_travel_time;
-        ooze_reprime          = m_config.ooze_reprime_base.value + rate * t;
-        if (ooze_reprime > 0.) {
+        if (m_ooze_restart_boost && ooze_can_push)
+            ooze_boost = *m_ooze_restart_boost;
+    } else if ((m_ooze_reprime_forced || m_config.ooze_reprime.value) && ooze_can_push &&
+               (m_ooze_reprime_forced ||
+                (m_writer.get_extruder_retracted_length((int) m_writer.filament()->id()) > 0. &&
+                 m_ooze_travel_time >= m_config.ooze_reprime_min_time.value))) {
+        // Reprime by the time off the print, from the ooze curve, then boost the start of the line.
+        ooze_reprime = ooze_curve_reprime(m_config.ooze_reprime_max.value, m_config.ooze_reprime_half_life.value, m_ooze_travel_time);
+        ooze_boost   = m_config.ooze_reprime_boost.value;
+        if (ooze_reprime > 0. || ooze_boost > 0.) {
             m_writer.filament()->retract(0., 0.);
-            char buf[128];
-            std::snprintf(buf, sizeof(buf), "; OOZE reprime: %.2f s off the print, reprime %.3f mm\n", m_ooze_travel_time, ooze_reprime);
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), "; OOZE reprime: %.2f s off the print, reprime %.3f mm, boost %.3f mm\n",
+                          m_ooze_travel_time, ooze_reprime, ooze_boost);
             ooze_reprime_note = buf;
             if (m_config.ooze_reprime_settle.value > 0.)
                 m_ooze_restart_dwell = m_config.ooze_reprime_settle.value;
         }
     }
+    m_ooze_restart_extra.reset();
+    m_ooze_restart_boost.reset();
     m_ooze_reprime_forced = false;
     m_ooze_travel_time    = 0.;
     m_ooze_extruded       = true;
@@ -9334,11 +9340,16 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     gcode += this->unretract();
     if (ooze_reprime > 0.)
         gcode += ooze_reprime_note + this->ooze_reprime(ooze_reprime);
+    else if (!ooze_reprime_note.empty())
+        gcode += ooze_reprime_note;
     // OrcaGarageBuild: after an ooze stop, give the reprime time to build the pressure up before moving.
     if (m_ooze_restart_dwell) {
         gcode += ooze_dwell_gcode(*m_ooze_restart_dwell, m_ooze_has_chute || this->is_BBL_Printer(), "ooze: let the pressure build");
         m_ooze_restart_dwell.reset();
     }
+    m_ooze_boost          = ooze_boost;
+    m_ooze_boost_distance = m_config.ooze_reprime_boost_distance.value;
+    m_ooze_boost_done     = 0.;
     m_config.apply(m_calib_config);
 
     // Orca: optimize for Klipper, set acceleration and jerk in one command
@@ -10036,7 +10047,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
             }
             // BBS: use G1 if not enable arc fitting or has no arc fitting result or in spiral_mode mode or we are doing sloped extrusion
             // Attention: G2 and G3 is not supported in spiral_mode mode
-            if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured || this->should_disable_arc_fitting()) {
+            // OrcaGarageBuild: a start boost needs the first millimetres of the line as short straight pieces.
+            if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured || this->should_disable_arc_fitting() || m_ooze_boost > 0.) {
                 double path_length = 0.;
                 double total_length = sloped == nullptr ? 0. : path.polyline.length() * SCALING_FACTOR;
                 double saved_z      = m_writer.get_position().z();
@@ -10057,6 +10069,13 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                         }
                     }
                     tag_belt_band((line.a.x() + line.b.x()) / 2, (line.a.y() + line.b.y()) / 2);
+                    if (m_ooze_boost > 0. && !path.z_contoured && sloped == nullptr && !path.is_force_no_extrusion()) {
+                        this->ooze_boost_extrude(gcode, this->point_to_gcode(line.a.to_point()), this->point_to_gcode(line.b.to_point()),
+                                                 dE, F, flow_description.empty() ? description : flow_description, comment);
+                        check_and_insert_timelapse(line.b.to_point());
+                        continue;
+                    }
+                    dE += this->ooze_boost_take(line_length);
                     if (path.z_contoured) {
                         // ZAA: Z anti-aliased extrusion with variable Z per point
                         Vec2d dest2d = this->point_to_gcode(line.b.to_point());
@@ -10266,6 +10285,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                     flow_description = description + Slic3r::format(" | Old Flow Value: %0.5f Length: %0.5f",oldE, line_length);
                 }
             }
+            // OrcaGarageBuild: the variable-speed pieces are short; each takes its share of a start boost whole.
+            dE += this->ooze_boost_take(line_length);
             if (path.z_contoured) {
                 Vec2d    dest2d = p.head<2>();
                 coordf_t z_diff = unscale_(processed_point.p.z());
@@ -10461,8 +10482,14 @@ std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string
     // OrcaGarageBuild: a long travel over the outside of the part goes through the ooze tower first, and
     // carries on from there.
     std::string gcode;
+    // A start boost carries on along the paths that follow the restart without a travel, and ends here.
+    m_ooze_boost = 0.;
     if (this->ooze_tower_wanted(point, role))
         gcode = this->ooze_tower_visit(point, role, false);
+    // The travel from here on is timed from the G-code it writes, retraction, wipe, lift and acceleration included.
+    const bool           ooze_timed        = m_ooze_extruded && m_writer.filament() != nullptr && this->ooze_timing_wanted();
+    const size_t         ooze_travel_from  = gcode.size();
+    const OozeGCodeClock ooze_travel_clock = ooze_timed ? this->ooze_clock() : OozeGCodeClock();
 
     /*  Define the travel move as a line between current position and the taget point.
         This is expressed in print coordinates, so it will need to be translated by
@@ -10625,11 +10652,10 @@ std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string
             }
         }
         this->set_last_pos(travel.points.back());
-        // OrcaGarageBuild: time off the print, for reprime by travel time.
-        if (m_ooze_extruded && m_writer.filament() != nullptr)
-            if (const double speed = this->ooze_travel_speed(); speed > 0.)
-                m_ooze_travel_time += unscale<double>(travel.length()) / speed;
     }
+    // OrcaGarageBuild: time off the print, for reprime by the time off the print.
+    if (ooze_timed)
+        m_ooze_travel_time += ooze_gcode_time(gcode.substr(ooze_travel_from), ooze_travel_clock);
 
     return gcode;
 }
@@ -10777,6 +10803,8 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
 std::string GCode::retract(bool toolchange, bool is_last_retraction, LiftType lift_type, bool apply_instantly, ExtrusionRole role)
 {
     std::string gcode;
+    // OrcaGarageBuild: a retraction ends a start boost.
+    m_ooze_boost = 0.;
 
     if (m_writer.filament() == nullptr)
         return gcode;
@@ -10844,6 +10872,7 @@ void GCode::ooze_start_object(const PrintObject &object, size_t instance_id, con
     m_ooze_hover.reset();
     m_ooze_restart_extra.reset();
     m_ooze_restart_dwell.reset();
+    m_ooze_restart_boost.reset();
     auto it = m_ooze_specs.find(&object);
     if (it == m_ooze_specs.end() || object_layer == nullptr)
         return;
@@ -10853,6 +10882,16 @@ void GCode::ooze_start_object(const PrintObject &object, size_t instance_id, con
         return;
     m_ooze_last_stop = key;
     m_ooze_pending   = OozeStop{it->second, object.model_object()->name, layer, it->second.reprime_at_layer(layer), &object, instance_id};
+}
+
+// How a stop's header describes its reprime.
+static std::string ooze_stop_reprime_text(double reprime, bool purge, bool auto_reprime)
+{
+    char buf[96];
+    if (auto_reprime && !purge)
+        return "reprime from the ooze curve";
+    std::snprintf(buf, sizeof(buf), "%s %.3f mm", purge ? "purge" : "reprime", reprime);
+    return buf;
 }
 
 static int ooze_layer_temperature(const PrintConfig &config, const Layer *layer, size_t filament_index)
@@ -10872,6 +10911,8 @@ void GCode::ooze_setup(const Print &print)
     m_ooze_hover.reset();
     m_ooze_restart_extra.reset();
     m_ooze_restart_dwell.reset();
+    m_ooze_restart_boost.reset();
+    m_ooze_boost     = 0.;
     m_ooze_last_stop = {nullptr, 0, -1};
     m_ooze_object_towers.clear();
     m_ooze_tower.reset();
@@ -10988,6 +11029,71 @@ Vec2d GCode::ooze_to_writer(const Vec2d &print_xy) const
     return print_xy - EXTRUDER_CONFIG(extruder_offset);
 }
 
+OozeGCodeClock GCode::ooze_clock()
+{
+    OozeGCodeClock clock;
+    const Vec2f    offset = m_writer.get_xy_offset();
+    clock.position        = m_writer.get_position() - Vec3d(offset.x(), offset.y(), 0.);
+    clock.print_accel     = m_writer.last_acceleration();
+    clock.travel_accel    = m_writer.last_travel_acceleration();
+    clock.feedrate        = m_writer.get_current_speed();
+    clock.relative_e      = m_config.use_relative_e_distances.value;
+    clock.e               = m_writer.filament() != nullptr ? m_writer.filament()->E() : 0.;
+    return clock;
+}
+
+double GCode::ooze_boost_take(double length)
+{
+    if (!(m_ooze_boost > 0.) || !(length > 0.))
+        return 0.;
+    const double extra = m_ooze_boost * ooze_boost_share(m_ooze_boost_done, m_ooze_boost_done + length, m_ooze_boost_distance);
+    m_ooze_boost_done += length;
+    if (m_ooze_boost_done >= m_ooze_boost_distance)
+        m_ooze_boost = 0.;
+    return extra;
+}
+
+// The part of the line within the boost distance goes out in pieces of at most a quarter of the distance, each with
+// its share of the boost on top of its own extrusion, and slowed down where the two together would push more
+// filament than the maximum volumetric speed. Every speed change carries the cooling marker, so a slowdown for
+// layer time still scales it. The rest of the line runs at the path's speed.
+void GCode::ooze_boost_extrude(std::string &gcode, const Vec2d &from, const Vec2d &to, double dE, double F,
+                               const std::string &description, const std::string &cooling_marker)
+{
+    const double length = (to - from).norm();
+    if (length < EPSILON)
+        return;
+    const double distance = m_ooze_boost_distance;
+    const double piece    = std::max(0.5, 0.25 * distance);
+    const size_t fi       = get_filament_config_index((int) m_writer.filament()->id());
+    const double diameter = m_config.filament_diameter.get_at(fi);
+    const double area     = 0.25 * PI * diameter * diameter;
+    const double max_flow = m_config.filament_max_volumetric_speed.get_at(fi);
+    double       at       = 0.;
+    while (at < length - EPSILON) {
+        double next = length;
+        if (m_ooze_boost > 0. && distance > 0.) {
+            if (distance - m_ooze_boost_done < 1e-3) {
+                m_ooze_boost = 0.;
+                continue;
+            }
+            next = std::min(length, at + std::min(piece, distance - m_ooze_boost_done));
+        }
+        const double piece_length = next - at;
+        const double extra        = this->ooze_boost_take(piece_length);
+        const double e            = dE * piece_length / length + extra;
+        double       speed        = F;
+        if (extra > 0. && max_flow > 0. && area > 0. && e > 0.)
+            speed = std::min(F, std::max(60., 60. * max_flow * piece_length / (e * area)));
+        if (std::abs(m_writer.get_current_speed() - speed) > 1.)
+            m_writer.set_speed(gcode, speed, "", cooling_marker);
+        m_writer.extrude_to_xy(gcode, from + (to - from) * (next / length), e, description);
+        at = next;
+    }
+    if (!(m_ooze_boost > 0.) && std::abs(m_writer.get_current_speed() - F) > 1.)
+        m_writer.set_speed(gcode, F, "", cooling_marker);
+}
+
 // Trips to the chute or a tower are not part of the wait being measured, so they run at up to 250 mm/s and
 // 5000 mm/s^2 within the machine limits, whatever slow travel the profile uses. Acceleration is only
 // touched when the profile controls it, because then the extrusion that follows sets it again.
@@ -11011,6 +11117,32 @@ std::string GCode::ooze_extra_retract(const OozeStopSpec &spec)
     if (!(spec.extra_retract > 0.) || m_config.use_firmware_retraction.value)
         return {};
     return m_writer.retract(false, m_writer.filament()->retraction_length() + spec.extra_retract);
+}
+
+// Arms the restart that ends a stop: the reprime, from the ooze curve for the time since the stop's retraction when
+// the name says A, the settle and the start boost. Returns a note with the time off the object.
+std::string GCode::ooze_restart(const OozeStop &stop, bool purge, double off_time)
+{
+    const double reprime = stop.spec.auto_reprime ?
+        ooze_curve_reprime(m_config.ooze_reprime_max.value, m_config.ooze_reprime_half_life.value, off_time) : stop.reprime;
+    // A purge leaves the normal restart; otherwise the test's reprime replaces it.
+    if (!purge)
+        m_ooze_restart_extra = reprime;
+    if (stop.spec.restart_dwell > 0.)
+        m_ooze_restart_dwell = stop.spec.restart_dwell;
+    if (stop.spec.boost > 0.)
+        m_ooze_restart_boost = stop.spec.boost;
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "; OOZE restart: %.2f s off the object | reprime %.3f mm | boost %.3f mm over %g mm\n", off_time,
+                  purge ? 0. : reprime, stop.spec.boost, m_config.ooze_reprime_boost_distance.value);
+    return buf;
+}
+
+// Length a stop purges: its reprime, or what the ooze curve gives for its wait.
+double GCode::ooze_purge_length(const OozeStop &stop) const
+{
+    return stop.spec.auto_reprime ?
+        ooze_curve_reprime(m_config.ooze_reprime_max.value, m_config.ooze_reprime_half_life.value, stop.spec.wait_s) : stop.reprime;
 }
 
 // Pushes the retraction back plus length, slowly enough for the hot end to melt it, and retracts again.
@@ -11068,7 +11200,8 @@ std::string GCode::ooze_park(const Point &restart_point)
     if (stop.spec.tower)
         return this->ooze_tower_stop(stop, restart_point);
 
-    const bool   purge  = stop.spec.purge && stop.reprime > 0. && !m_config.use_firmware_retraction.value;
+    const double purge_length = this->ooze_purge_length(stop);
+    const bool   purge  = stop.spec.purge && purge_length > 0. && !m_config.use_firmware_retraction.value;
     const size_t fi     = get_filament_config_index((int) m_writer.filament()->id());
     const int    temp   = ooze_layer_temperature(m_config, m_layer, fi);
     const int    cool   = stop.spec.cool_deg();
@@ -11078,9 +11211,12 @@ std::string GCode::ooze_park(const Point &restart_point)
     // Open this object's exclude-object block first, so skipping the object skips its stops too.
     m_writer.add_object_change_labels(gcode);
     char        buf[256];
-    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | park %g s | %s %.3f mm\n", stop.name.c_str(), stop.layer + 1,
-                  stop.spec.wait_s, purge ? "purge" : "reprime", stop.reprime);
+    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | park %g s | %s\n", stop.name.c_str(), stop.layer + 1,
+                  stop.spec.wait_s, ooze_stop_reprime_text(purge_length, purge, stop.spec.auto_reprime).c_str());
     gcode += buf;
+    // The nozzle is off the object from here to the restart.
+    const size_t         off_from  = gcode.size();
+    const OozeGCodeClock off_clock = this->ooze_clock();
     gcode += m_writer.retract();
 
     const double restart_z = m_nominal_z;
@@ -11104,7 +11240,7 @@ std::string GCode::ooze_park(const Point &restart_point)
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) temp, true);
     if (purge)
-        gcode += this->ooze_purge(stop.reprime, "ooze: purge into the chute");
+        gcode += this->ooze_purge(purge_length, "ooze: purge into the chute");
 
     for (const OozeWipeMove &move : bambu_wipe_moves)
         gcode += m_writer.travel_to_xy(at(move.x, chute.y), move.feedrate / 60., "");
@@ -11115,11 +11251,7 @@ std::string GCode::ooze_park(const Point &restart_point)
     // Already at the restart point and height: _extrude() skips its own travel.
     this->set_last_pos(restart_point);
     m_need_change_layer_lift_z = false;
-    // A purge leaves the normal restart; otherwise the test's extra length replaces it.
-    if (!purge)
-        m_ooze_restart_extra = stop.reprime;
-    if (stop.spec.restart_dwell > 0.)
-        m_ooze_restart_dwell = stop.spec.restart_dwell;
+    gcode += this->ooze_restart(stop, purge, ooze_gcode_time(gcode.substr(off_from), off_clock));
     return gcode;
 }
 
@@ -11136,7 +11268,8 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
     OozeTower &tower = it->second;
     tower.start_layer(m_layer != nullptr ? m_layer->print_z : m_nominal_z);
 
-    const bool   purge  = stop.spec.purge && stop.reprime > 0. && !m_config.use_firmware_retraction.value;
+    const double purge_length = this->ooze_purge_length(stop);
+    const bool   purge  = stop.spec.purge && purge_length > 0. && !m_config.use_firmware_retraction.value;
     const size_t fi     = get_filament_config_index((int) m_writer.filament()->id());
     const int    temp   = ooze_layer_temperature(m_config, m_layer, fi);
     const int    cool   = stop.spec.cool_deg();
@@ -11146,9 +11279,9 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
     // Open this object's exclude-object block first, so skipping the object skips its stops and tower too.
     m_writer.add_object_change_labels(gcode);
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | tower, then wait %g s | %s %.3f mm | settle %g s\n",
-                  stop.name.c_str(), stop.layer + 1, stop.spec.wait_s, purge ? "purge" : "reprime", stop.reprime,
-                  stop.spec.restart_dwell);
+    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | tower, then wait %g s | %s | settle %g s\n",
+                  stop.name.c_str(), stop.layer + 1, stop.spec.wait_s,
+                  ooze_stop_reprime_text(purge_length, purge, stop.spec.auto_reprime).c_str(), stop.spec.restart_dwell);
     gcode += buf;
     gcode += m_writer.retract();
 
@@ -11172,7 +11305,12 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
                                    "ooze: to the ooze tower");
     gcode += m_writer.travel_to_z(restart_z, "ooze: down onto the tower", true);
     gcode += this->ooze_tower_loops(tower, tower.loops_left(), angle);
+    // The nozzle is off the object from this retraction to the restart. The tower's layer set the printing
+    // acceleration; the trips go back to fast moves.
+    const size_t         off_from  = gcode.size();
+    const OozeGCodeClock off_clock = this->ooze_clock();
     gcode += m_writer.retract();
+    gcode += this->ooze_fast_moves(speed);
 
     // 2. Wait over the hollow, a little above the tower, so what drips falls inside it.
     gcode += m_writer.travel_to_z(restart_z + ooze_tower_hover_height, "ooze: lift over the tower", true);
@@ -11184,7 +11322,7 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) temp, true);
     if (purge)
-        gcode += this->ooze_purge(stop.reprime, "ooze: purge into the tower");
+        gcode += this->ooze_purge(purge_length, "ooze: purge into the tower");
 
     // 3. Wipe what hangs from the nozzle across the top of the walls, towards the object.
     gcode += m_writer.travel_to_z(restart_z, "ooze: down to the top of the tower", true);
@@ -11200,11 +11338,7 @@ std::string GCode::ooze_tower_stop(const OozeStop &stop, const Point &restart_po
     // Already at the restart point and height: _extrude() skips its own travel.
     this->set_last_pos(restart_point);
     m_need_change_layer_lift_z = false;
-    // A purge leaves the normal restart; otherwise the test's extra length replaces it.
-    if (!purge)
-        m_ooze_restart_extra = stop.reprime;
-    if (stop.spec.restart_dwell > 0.)
-        m_ooze_restart_dwell = stop.spec.restart_dwell;
+    gcode += this->ooze_restart(stop, purge, ooze_gcode_time(gcode.substr(off_from), off_clock));
     return gcode;
 }
 
@@ -11301,7 +11435,8 @@ bool GCode::ooze_tower_wanted(const Point &point, ExtrusionRole role)
     const Vec2d      from  = unscale(this->last_pos()) + m_origin;
     const Vec2d      to    = unscale(point) + m_origin;
     const OozeTower &tower = *m_ooze_tower;
-    if ((to - from).norm() / speed <= m_config.ooze_tower_travel_time.value)
+    const double accel = m_writer.last_travel_acceleration() > 0 ? m_writer.last_travel_acceleration() : NOZZLE_CONFIG(travel_acceleration);
+    if (ooze_move_time((to - from).norm(), speed, accel) <= m_config.ooze_tower_travel_time.value)
         return false;
     if ((from - tower.center()).norm() <= tower.shape().footprint_radius() + EPSILON)
         return false;
@@ -11328,10 +11463,11 @@ std::string GCode::ooze_tower_visit(const Point &point, ExtrusionRole role, bool
     gcode += this->travel_to(this->gcode_to_point(this->ooze_to_writer(entry)), role, "ooze tower: to the tower");
     gcode += m_writer.unlift();
     gcode += this->ooze_tower_loops(tower, rest_of_layer ? tower.loops_left() : 1, angle);
-    // With no loops left on this layer, the visit only wipes.
+    // With no loops left on this layer, the visit only wipes. The time off the print starts again here.
+    const size_t         off_from  = gcode.size();
+    const OozeGCodeClock off_clock = this->ooze_clock();
     gcode += m_writer.retract();
-    m_ooze_travel_time = 0.;
-    const double drain = rest_of_layer ? 0. : m_config.ooze_reprime_time_limit.value;
+    const double drain = rest_of_layer ? 0. : m_config.ooze_tower_drain.value;
     if (drain > 0.) {
         const double z = m_writer.get_position().z();
         gcode += m_writer.travel_to_z(z + ooze_tower_hover_height, "ooze tower: lift over the tower", true);
@@ -11340,13 +11476,13 @@ std::string GCode::ooze_tower_visit(const Point &point, ExtrusionRole role, bool
         gcode += m_writer.travel_to_z(z, "ooze tower: down to the top of the tower", true);
         gcode += m_writer.travel_to_xy(this->ooze_to_writer(tower.center() + (tower.shape().outer_radius() + tower.shape().line_width) * toward),
                                        "ooze tower: wipe across the tower");
-        m_ooze_travel_time = drain;
     } else
         gcode += this->ooze_tower_wipe(tower);
     this->set_last_pos(this->gcode_to_point(to_2d(m_writer.get_position())));
     m_wipe.reset_path();
     // Already retracted: this only lifts for the trip back to the part.
     gcode += this->retract(false, false, LiftType::NormalLift);
+    m_ooze_travel_time = ooze_gcode_time(gcode.substr(off_from), off_clock);
     if (!rest_of_layer)
         m_ooze_reprime_forced = true;
     m_ooze_tower_busy = false;
@@ -11366,9 +11502,12 @@ std::string GCode::ooze_hover()
 
     std::string gcode;
     char        buf[256];
-    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | hover %g s | reprime %.3f mm\n", stop.name.c_str(), stop.layer + 1,
-                  stop.spec.wait_s, stop.reprime);
+    std::snprintf(buf, sizeof(buf), "; OOZE stop: %s | layer %d | hover %g s | %s\n", stop.name.c_str(), stop.layer + 1,
+                  stop.spec.wait_s, ooze_stop_reprime_text(stop.reprime, false, stop.spec.auto_reprime).c_str());
     gcode += buf;
+    // The nozzle has been off the object since the travel here; it stays off until the restart.
+    const size_t         off_from  = gcode.size();
+    const OozeGCodeClock off_clock = this->ooze_clock();
     gcode += m_writer.retract();
     const double z = m_writer.get_position().z();
     gcode += m_writer.travel_to_z(z + std::max(1., double(m_layer ? m_layer->height : 0.)), "ooze: hover", true);
@@ -11379,9 +11518,7 @@ std::string GCode::ooze_hover()
     if (cooled)
         gcode += m_writer.set_temperature((unsigned int) temp, true);
     gcode += m_writer.travel_to_z(z, "ooze: down to the layer", true);
-    m_ooze_restart_extra = stop.reprime;
-    if (stop.spec.restart_dwell > 0.)
-        m_ooze_restart_dwell = stop.spec.restart_dwell;
+    gcode += this->ooze_restart(stop, false, m_ooze_travel_time + ooze_gcode_time(gcode.substr(off_from), off_clock));
     return gcode;
 }
 

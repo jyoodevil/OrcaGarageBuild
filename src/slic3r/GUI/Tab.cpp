@@ -3313,14 +3313,15 @@ void TabPrint::build()
         optgroup->append_single_option_line("ooze_tower_walls");
         optgroup->append_single_option_line("ooze_tower_brim_loops");
         optgroup->append_single_option_line("ooze_tower_travel_time");
+        optgroup->append_single_option_line("ooze_tower_drain");
 
         optgroup = page->new_optgroup(L("Ooze reprime"), L"param_ooze_prevention");
         optgroup->append_single_option_line("ooze_reprime");
-        optgroup->append_single_option_line("ooze_reprime_base");
-        optgroup->append_single_option_line("ooze_reprime_amount");
-        optgroup->append_single_option_line("ooze_reprime_interval");
-        optgroup->append_single_option_line("ooze_reprime_time_limit");
+        optgroup->append_single_option_line("ooze_reprime_max");
+        optgroup->append_single_option_line("ooze_reprime_half_life");
         optgroup->append_single_option_line("ooze_reprime_min_time");
+        optgroup->append_single_option_line("ooze_reprime_boost");
+        optgroup->append_single_option_line("ooze_reprime_boost_distance");
         optgroup->append_single_option_line("ooze_reprime_settle");
 
         optgroup = page->new_optgroup(L("Special mode"), L"param_special");

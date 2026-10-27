@@ -6,7 +6,8 @@ OrcaSlicer with these additions:
 - **Wave overhangs** from [OrcaSlicer-WaveOverhangs](https://github.com/dennisklappe/OrcaSlicer-WaveOverhangs)
   (settings: [WAVE_OVERHANG_SETTINGS.md](WAVE_OVERHANG_SETTINGS.md)).
 - **Ooze and reprime calibration**, for large nozzles that lose pressure while they wait.
-- **Ooze control** for normal prints: reprime by travel time, and an ooze tower that long travels go through.
+- **Ooze control** for normal prints: reprime by the time off the print, a start boost, and an ooze tower that long
+  travels go through.
 - **Report the variant's nozzle to the printer**, for nozzle sizes a Bambu Lab printer can't be set to.
 
 It installs as *OrcaGarageBuild* (`orca-garagebuild.exe`). It keeps its settings in its own folder
@@ -20,7 +21,7 @@ A big nozzle keeps oozing after a retraction. What drips out while it waits ends
 and the restart is short of material by however much it lost. This calibration measures both, so the restart can
 push the right amount back in and a print knows when to clean the nozzle on an ooze tower first.
 
-Open **Calibration > Ooze and reprime**. There are two tests:
+Open **Calibration > Ooze and reprime**. There are three tests:
 
 - **Ooze ladder**: a grid of short hollow cylinders. Rows run front to back by wait time, and columns run left to
   right by reprime rate. Before every layer of every cylinder, the nozzle stops for that row's wait, then restarts
@@ -30,6 +31,9 @@ Open **Calibration > Ooze and reprime**. There are two tests:
 - **Reprime check**: one row of taller cylinders that all wait the same time, with reprime lengths around one
   value. Use it to confirm a value from the ladder over many layers. It can also purge the reprime into the tower or
   chute and restart normally, which tests priming there instead of at the part.
+- **Boost ladder**: rows by wait time again, but every cylinder reprimes what the ooze curve (below) gives for its
+  real time off the cylinder, and the columns rise by **start boost**: extra filament pushed along the start of the
+  line as the nozzle moves off. Use it once the curve is known, to fill the start of the line without a blob.
 
 Reprime lengths are millimetres of filament pushed back in after the stop. They replace the *extra length on
 restart* (`retract_restart_extra`) for that restart only.
@@ -59,9 +63,12 @@ Every stop can also cool while it waits and retract further while it waits (**Re
 pushing it back on restart. Both are off by default, so a wait behaves like a travel. A deeper retraction oozes less,
 but too deep can pull molten filament into the cold zone.
 
-The defaults are made for finding the reprime a travel needs: waits of 5, 15, 30 and 60 seconds, a 3 mm base
-reprime, reprime rates from 0.1 to 0.6 mm per second of wait, and a 1 second settle. A 60 second wait then reprimes
-from 9 to 39 mm.
+The ladder's defaults are made for a first look: waits of 5, 15, 30 and 60 seconds, a 3 mm base reprime and reprime
+rates from 0.1 to 0.6 mm per second of wait, with no settle. A 60 second wait then reprimes from 9 to 39 mm.
+
+Each stop also takes a few seconds to go over the tower and back, so the nozzle is off the cylinder for longer than
+the wait. Every restart notes the real time in the G-code, for example
+`; OOZE restart: 6.32 s off the object | reprime 4.512 mm | boost 1.000 mm over 15 mm`.
 
 ### Reading the ladder
 
@@ -83,6 +90,23 @@ The cylinders are as large as the bed allows, up to 25 mm. Four rows of towers l
 only a few lines across with a large nozzle, so use the first run to find the region that works, then run the ladder
 again with three waits and a narrower range of rates around it for cylinders twice that size.
 
+### Weighing the cylinders
+
+The seams only show where the reprime lands. How much the nozzle lost shows in the weights, and that is what the ooze
+curve is fitted to:
+
+1. Rename one cylinder to anything that doesn't start with `ooze`, for example `control`. It prints with no stops, so
+   its weight is what a cylinder weighs when nothing is lost. Keep each cylinder with its own tower when you take
+   them off, drips in the hollow included.
+2. Weigh a few short pieces of the filament, measured with calipers, for its real milligrams per millimetre; the
+   density on a data sheet is often for molded test bars.
+3. A cylinder's weight minus the control's, divided by its layers and by the filament's mg/mm, is how many mm of
+   filament its reprime fell short (negative) or over. Its reprime plus that shortfall is what the nozzle lost in
+   that row's time off the cylinder, and its tower should have gained about the same.
+
+The losses for each row's real time off fit a curve that rises quickly and levels off: the **maximum ooze** and the
+**ooze half-life** under **Others > Ooze reprime**. The boost ladder and normal prints both reprime by that curve.
+
 The drips in each tower's hollow are the ooze itself: everything that came out during that row's waits. Weighing
 them gives a check on the ladder's rate: mm of filament per second = grams / density in g/cm³ × 1000 / filament
 cross-section in mm² (2.405 for 1.75 mm filament) / total seconds waited (layers × wait). What still hangs from the
@@ -100,6 +124,8 @@ renaming it. A name that starts with the word `ooze` takes these tokens, separat
 | `W30` | Wait 30 seconds (required) |
 | `R1.2` | Reprime 1.2 mm of filament on restart (default 0) |
 | `R0+0.5/3` | Reprime 0 mm, raised by 0.5 mm every 3 layers of the object |
+| `A` | Instead of R, reprime what the ooze curve in the print settings gives for the real time off the object |
+| `B1.5` | Start boost: push 1.5 mm more along the first **Boost distance** of the line, tapering off |
 | `C20` | Cool the nozzle by 20 °C while waiting (default 20 over a tower or the chute, 0 when hovering) |
 | `D2` | Retract 2 mm further while waiting |
 | `S1` | After the reprime, wait 1 second for the pressure to build before printing |
@@ -108,7 +134,7 @@ renaming it. A name that starts with the word `ooze` takes these tokens, separat
 | `P` | Purge the reprime into the tower or chute, then restart with the normal extra length |
 
 Without `T` or `H`, the nozzle parks over the purge chute. For example: `ooze W30 R3 S1 T`, `ooze W30 R1.5 C40 D2 T`,
-`ooze W20 R0+0.5/3 C0 T`, `ooze W60 R1 H`.
+`ooze W20 R0+0.5/3 C0 T`, `ooze W60 R1 H`, `ooze W4 A B2 T`.
 
 An object with `T` needs room behind it (towards the back of the bed) for its tower, and cannot have a raft, because
 the tower starts on the bed. Slicing stops with an error if a tower is off the bed or overlaps another object or tower.
@@ -123,40 +149,44 @@ Two groups under **Print settings > Others** use the ooze ladder's results in no
 
 ### Ooze reprime
 
-**Reprime after travels** pushes back what the nozzle oozed during a travel, by how long the travel took. The
-travel's time is its path length at the travel speed, including any detour that **Avoid crossing walls** adds. After a
-travel of at least **Minimum travel time**, printing restarts with:
+**Reprime after travels** pushes back what the nozzle oozed while it was off the print. After a retracted travel of
+at least **Minimum travel time**, printing restarts with
 
-    reprime = Base reprime + (Reprime / Per) × min(travel time, Ooze time limit)
+    reprime = Maximum ooze × (1 − 0.5^(time off / Ooze half-life))
 
-in place of the extra length on restart. The reprime is pushed after the retraction goes back, at half the
-filament's maximum volumetric speed so it melts as it goes in, and then the nozzle waits **Settle after the
-reprime** before it moves. Shorter travels restart normally. The travel from the start G-code to the first part is
-not counted.
+in place of the extra length on restart. The time off runs from the retraction to the restart, and is worked out from
+the G-code the travel writes: the retraction and wipe, the Z hop, the travel with its acceleration, and any detour
+that **Avoid crossing walls** adds. The travel from the start G-code to the first part is not counted.
 
-From the ladder: **Base reprime** is the ladder's base reprime (or the start of the line through the winners),
-**Reprime** per **Per** is the winning rate (for example 0.2 mm per 1 s), **Ooze time limit** is how long the nozzle
-keeps oozing before it runs dry (the long-wait row and the tower weights show it; 0 means no limit), and **Settle**
-is the ladder's settle time.
+The reprime is pushed after the retraction goes back, at half the filament's maximum volumetric speed, so it melts as
+it goes in. A large nozzle still starts its line thin while the pressure builds, so the **Start boost** then pushes
+more filament along the first **Boost distance** of the line: most at the restart point, tapering to nothing. Where
+the line plus the boost would push more than the filament's maximum volumetric speed, that stretch slows down. The
+boost carries on across paths until the next travel or retraction. **Settle after the reprime** waits at the restart
+point before the nozzle moves; whatever comes out meanwhile stays there as a blob, so the boost usually does better.
+
+From the calibration: **Maximum ooze** and **Ooze half-life** come from the weighed ladders, and **Start boost** and
+**Boost distance** from the boost ladder.
 
 Travels that stay inside the part leave their drips on the infill. Turn on **Avoid crossing walls** so travels stay
-inside the part, and **Reduce infill retraction** if the drips should go into the infill without a retraction. The
-reprime counts the time either way.
+inside the part, and **Reduce infill retraction** if the drips should go into the infill without a retraction. Use
+the inner/outer wall order so restarts land on an inner wall rather than the outer one.
 
 ### Ooze tower
 
 **Ooze tower** adds one ooze tower to the print, at the X and Y given there; place it next to the part. A travel goes
-through it when it takes longer than **Travel time** at the travel speed and leaves the inside of the part (travels
-that stay over infill hide their drips there). This is for parts with little infill, mostly walls, or separate
-sections far apart.
+through it when it would take longer than **Travel time**, counting the travel acceleration, and leaves the inside of
+the part (travels that stay over infill hide their drips there). This is for parts with little infill, mostly walls,
+or separate sections far apart.
 
 On each visit the nozzle:
 
 1. Prints one loop of the tower's current layer, which wipes off what it oozed on the way.
-2. Retracts and waits over the tower's hollow for the **Ooze time limit**, so it drains there instead of on the part.
+2. Retracts and waits over the tower's hollow for the **Drain time**, so it oozes there instead of on the part. About
+   four half-lives empties it.
 3. Comes down and wipes across the tower's walls towards where it is going.
-4. Travels on to the part and restarts with the reprime for a drained nozzle (the formula above with the full time
-   limit), then settles. This happens even when **Reprime after travels** is off.
+4. Travels on to the part and restarts with the reprime the curve gives for the whole time away, then the start
+   boost. This happens even when **Reprime after travels** is off.
 
 At the end of every layer the loops the layer has left are printed, so the tower grows with the print and is always
 solid. Its first layer has the brim loops for grip. The tower needs layer-by-layer printing (not by object) and does

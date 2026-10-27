@@ -17790,6 +17790,13 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
     print_config->set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
     // Firmware retraction ignores the restart length the test sets.
     printer_config->set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
+    // The boost ladder reprimes by the ooze curve and spreads its boosts over the boost distance, both read from
+    // the print settings, where they stay for real prints.
+    if (params.test == OozeCalibTest::Boost) {
+        print_config->set_key_value("ooze_reprime_max", new ConfigOptionFloat(params.ooze_max));
+        print_config->set_key_value("ooze_reprime_half_life", new ConfigOptionFloat(params.half_life));
+        print_config->set_key_value("ooze_reprime_boost_distance", new ConfigOptionFloat(params.boost_distance));
+    }
 
     const double first_layer_height = print_config->opt_float("initial_layer_print_height");
     const double layer_height       = print_config->opt_float("layer_height");
@@ -17822,8 +17829,9 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
         cfg.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
         cfg.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
         cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
-        cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
-        cfg.set_key_value("brim_width", new ConfigOptionFloat(layout->brim));
+        // No brim: it would get in the way of measuring and weighing the cylinder, and a narrow one rounds
+        // down to nothing with a large nozzle anyway.
+        cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btNoBrim));
 
         // Recheck the instance against the plate it landed on.
         get_partplate_list().notify_instance_update(int(obj_idx), 0);
@@ -17838,17 +17846,34 @@ bool Plater::calib_ooze(const OozeCalibParams& params, wxString& error)
     wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
 
-    const wxString how_to_read = params.ladder ?
+    const int minutes = int(std::lround(layout->wait_total / 60.));
+    wxString  how_to_read;
+    switch (params.test) {
+    case OozeCalibTest::Ladder:
         // TRN: %1% is the number of stops, %2% the minutes spent waiting.
-        format_wxstr(_L("Ooze ladder: %1% stops, about %2% minutes of waiting. Rows run front to back by wait time and "
-                        "columns left to right by reprime rate; each cylinder reprimes the base reprime plus its rate "
-                        "times its wait, and its name shows the total. Each restart is on the back of its cylinder: a "
-                        "gap means too little reprime, a blob too much. With ooze towers, each cylinder's tower is "
-                        "printed behind it during slicing."),
-                     layout->stops, int(std::lround(layout->wait_total / 60.))) :
-        format_wxstr(_L("Reprime check: %1% stops, about %2% minutes of waiting. Reprime lengths rise from left to "
-                        "right. Pick the cylinder whose seam at the back is neither gapped nor blobbed."),
-                     layout->stops, int(std::lround(layout->wait_total / 60.)));
+        how_to_read = format_wxstr(_L("Ooze ladder: %1% stops, about %2% minutes of waiting. Rows run front to back by wait "
+                                      "time and columns left to right by reprime rate; each cylinder reprimes the base reprime "
+                                      "plus its rate times its wait, and its name shows the total. Each restart is on the back "
+                                      "of its cylinder: a gap means too little reprime, a blob too much. With ooze towers, "
+                                      "each cylinder's tower is printed behind it during slicing."),
+                                   layout->stops, minutes);
+        break;
+    case OozeCalibTest::Check:
+        // TRN: %1% is the number of stops, %2% the minutes spent waiting.
+        how_to_read = format_wxstr(_L("Reprime check: %1% stops, about %2% minutes of waiting. Reprime lengths rise from left "
+                                      "to right. Pick the cylinder whose seam at the back is neither gapped nor blobbed."),
+                                   layout->stops, minutes);
+        break;
+    case OozeCalibTest::Boost:
+        // TRN: %1% is the number of stops, %2% the minutes spent waiting.
+        how_to_read = format_wxstr(_L("Boost ladder: %1% stops, about %2% minutes of waiting. Rows run front to back by wait "
+                                      "time and start boosts rise from left to right. Every restart reprimes what the ooze "
+                                      "curve in the print settings gives for its real time off the cylinder, which the G-code "
+                                      "notes at each restart. Pick the boost that fills the start of the line at the back of "
+                                      "the cylinder without a blob."),
+                                   layout->stops, minutes);
+        break;
+    }
     get_notification_manager()->push_notification(how_to_read.utf8_string());
     return true;
 }

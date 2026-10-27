@@ -132,7 +132,7 @@ protected:
     Plater* m_plater;
 };
 
-// OrcaGarageBuild: ooze ladder and reprime check (see libslic3r/GCode/OozeStop.hpp).
+// OrcaGarageBuild: ooze ladder, reprime check and boost ladder (see libslic3r/GCode/OozeStop.hpp).
 class Ooze_Reprime_Test_Dlg : public DPIDialog
 {
 public:
@@ -162,10 +162,19 @@ protected:
     TextInput*       m_tiCheckStep;
     TextInput*       m_tiBoxes;
     TextInput*       m_tiCheckLayers;
+    TextInput*       m_tiBoostWaits;
+    TextInput*       m_tiOozeMax;
+    TextInput*       m_tiHalfLife;
+    TextInput*       m_tiBoostStart;
+    TextInput*       m_tiBoostStep;
+    TextInput*       m_tiBoostCount;
+    TextInput*       m_tiBoostDistance;
+    TextInput*       m_tiBoostLayers;
     CheckBox*        m_cbPurge;
     wxStaticText*    m_stChuteNote;
     LabeledStaticBox* m_ladder_box;
     LabeledStaticBox* m_check_box;
+    LabeledStaticBox* m_boost_box;
 };
 
 class Input_Shaping_Freq_Test_Dlg : public DPIDialog

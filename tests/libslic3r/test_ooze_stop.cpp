@@ -108,6 +108,100 @@ TEST_CASE("An ooze object name reads back as the same stop", "[OozeStop]")
     CHECK(back->purge);
 }
 
+TEST_CASE("An ooze object name can reprime by the ooze curve and boost the start of the line", "[OozeStop]")
+{
+    const std::optional<OozeStopSpec> spec = parse_ooze_object_name("ooze W4 A B2.5 T");
+    REQUIRE(spec.has_value());
+    CHECK(spec->auto_reprime);
+    CHECK_THAT(spec->boost, WithinAbs(2.5, 1e-9));
+    CHECK(spec->tower);
+
+    const std::optional<OozeStopSpec> back = parse_ooze_object_name(ooze_object_name(*spec));
+    INFO(ooze_object_name(*spec));
+    REQUIRE(back.has_value());
+    CHECK(back->auto_reprime);
+    CHECK_THAT(back->boost, WithinAbs(2.5, 1e-9));
+
+    // Without the tokens, neither.
+    const std::optional<OozeStopSpec> plain = parse_ooze_object_name("ooze W4 R1 T");
+    REQUIRE(plain.has_value());
+    CHECK_FALSE(plain->auto_reprime);
+    CHECK_THAT(plain->boost, WithinAbs(0., 1e-9));
+}
+
+TEST_CASE("The ooze curve loses half of the maximum per half-life", "[OozeStop]")
+{
+    // 8 mm at most, half-life 5 s.
+    CHECK_THAT(ooze_curve_reprime(8., 5., 5.), WithinAbs(4., 1e-9));
+    CHECK_THAT(ooze_curve_reprime(8., 5., 10.), WithinAbs(6., 1e-9));
+    CHECK_THAT(ooze_curve_reprime(8., 5., 0.), WithinAbs(0., 1e-9));
+    CHECK(ooze_curve_reprime(8., 5., 1000.) <= 8.);
+    // No half-life: the whole maximum at once.
+    CHECK_THAT(ooze_curve_reprime(8., 0., 0.1), WithinAbs(8., 1e-9));
+}
+
+TEST_CASE("A start boost pushes most at the restart and nothing past its distance", "[OozeStop]")
+{
+    // Over 10 mm: three quarters in the first half, a quarter in the second, nothing after.
+    CHECK_THAT(ooze_boost_share(0., 10., 10.), WithinAbs(1., 1e-9));
+    CHECK_THAT(ooze_boost_share(0., 5., 10.), WithinAbs(0.75, 1e-9));
+    CHECK_THAT(ooze_boost_share(5., 10., 10.), WithinAbs(0.25, 1e-9));
+    CHECK_THAT(ooze_boost_share(10., 20., 10.), WithinAbs(0., 1e-9));
+    CHECK(ooze_boost_share(0., 1., 10.) > ooze_boost_share(1., 2., 10.));
+    // No distance: all of it at the restart point.
+    CHECK_THAT(ooze_boost_share(0., 1., 0.), WithinAbs(1., 1e-9));
+}
+
+TEST_CASE("Ooze timing counts acceleration, retractions and dwells", "[OozeStop]")
+{
+    // 100 mm at 50 mm/s and 500 mm/s^2: 2 s at speed plus 0.1 s to speed up and slow down.
+    CHECK_THAT(ooze_move_time(100., 50., 500.), WithinAbs(2.1, 1e-9));
+    // Too short to reach full speed: half the way speeding up, half slowing down.
+    CHECK_THAT(ooze_move_time(1., 50., 500.), WithinAbs(2. * std::sqrt(1. / 500.), 1e-9));
+    CHECK_THAT(ooze_move_time(100., 50., 0.), WithinAbs(2., 1e-9));
+
+    // A 2 mm retraction at 30 mm/s, a 2 mm lift at 5 mm/s, the move above, a 3.5 s wait and a 2 mm push back.
+    OozeGCodeClock clock;
+    clock.print_accel   = 10000.;
+    const std::string gcode = "G1 E-2 F1800 ; retract\n"
+                              "G1 Z2 F300\n"
+                              "M204 S500\n"
+                              "G1 X100 F3000\n"
+                              "M400\n"
+                              "M400 S3 ; wait\n"
+                              "G4 P500\n"
+                              "G1 E2 F1800\n";
+    CHECK_THAT(ooze_gcode_time(gcode, clock), WithinAbs(2. / 30. + 2. / 5. + 2.1 + 3.5 + 2. / 30., 1e-9));
+}
+
+TEST_CASE("The boost ladder reprimes every cylinder by the ooze curve and boosts by column", "[OozeStop]")
+{
+    OozeCalibParams params;
+    params.test        = OozeCalibTest::Boost;
+    params.stop        = OozeStopKind::Chute;
+    params.boost_waits = {1., 4.};
+    params.boost_start = 0.;
+    params.boost_step  = 1.5;
+    params.boost_count = 3;
+    std::string error;
+    const std::optional<OozeCalibLayout> layout = ooze_calib_layout(params, Vec2d(0., 0.), Vec2d(256., 256.), &error);
+    INFO(error);
+    REQUIRE(layout.has_value());
+    REQUIRE(layout->objects.size() == 6);
+    CHECK(layout->stops == 6 * params.boost_layers);
+    for (size_t i = 0; i < layout->objects.size(); ++i) {
+        const std::optional<OozeStopSpec> spec = parse_ooze_object_name(layout->objects[i].name);
+        INFO(layout->objects[i].name);
+        REQUIRE(spec.has_value());
+        CHECK(spec->auto_reprime);
+        CHECK_THAT(spec->boost, WithinAbs(1.5 * double(i % 3), 1e-9));
+        CHECK_THAT(spec->wait_s, WithinAbs(i < 3 ? 1. : 4., 1e-9));
+    }
+
+    params.half_life = 0.;
+    CHECK_FALSE(ooze_calib_layout(params, Vec2d(0., 0.), Vec2d(256., 256.), &error).has_value());
+}
+
 TEST_CASE("Only Bambu Lab X1 and P1 printers park over a purge chute", "[OozeStop]")
 {
     CHECK(printer_has_bambu_purge_chute("Bambu Lab X1 Carbon"));
@@ -167,7 +261,7 @@ TEST_CASE("The reprime check centres its reprime lengths on the chosen value", "
 {
     OozeCalibParams params;
     params.stop        = OozeStopKind::Chute;
-    params.ladder      = false;
+    params.test        = OozeCalibTest::Check;
     params.wait        = 30.;
     params.reprime_mid = 1.;
     params.check_step  = 0.25;

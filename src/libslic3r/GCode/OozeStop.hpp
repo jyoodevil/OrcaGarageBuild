@@ -27,6 +27,12 @@ namespace Slic3r {
 //   C<deg>            cool the nozzle by <deg> while waiting (default 20 parked or over a
 //                     tower, 0 hovering)
 //   D<mm>             retract this much further while waiting, pushed back on restart
+//   A                 in place of R: reprime what the ooze curve in the print settings
+//                     (ooze_reprime_max, ooze_reprime_half_life) gives for the time the nozzle
+//                     actually spends off the object, from its retraction to its restart
+//   B<mm>             start boost: after the reprime, push this much more filament along the
+//                     first ooze_reprime_boost_distance of the line, tapering off, so the
+//                     pressure builds while the nozzle moves instead of in a blob
 //   S<s>              after pushing the reprime, wait this long for the pressure to build
 //                     before printing (default 0)
 //   T                 print the layer of an ooze tower behind the object first, then wait over
@@ -35,13 +41,15 @@ namespace Slic3r {
 //   P                 purge R into the chute or the tower, then restart with the normal
 //                     extra length
 // Without T or H the nozzle parks over the purge chute of a Bambu Lab X1 or P1.
-// Examples: "ooze W30 R1.2 S1 T", "ooze W20 R0+0.5/3 C40 D2 T", "ooze W60 R1 C0 H".
+// Examples: "ooze W30 R1.2 S1 T", "ooze W20 R0+0.5/3 C40 D2 T", "ooze W60 R1 C0 H", "ooze W4 A B2 T".
 struct OozeStopSpec
 {
     double wait_s        = 0.;
     double reprime       = 0.;
     double reprime_step  = 0.;
     int    step_layers   = 0;  // 0: no ramp
+    bool   auto_reprime  = false; // A: reprime from the ooze curve, at the real time off the object
+    double boost         = 0.;    // B: start boost, mm of filament
     int    cool          = -1; // -1: default for the stop type
     double extra_retract = 0.;
     double restart_dwell = 0.; // seconds between the reprime and the first move
@@ -89,6 +97,39 @@ inline constexpr std::array<OozeWipeMove, 10> bambu_wipe_moves{{
 // firmware dwells with M400 S<s> / M400 P<ms>, as Bambu's own G-code does.
 std::string ooze_dwell_gcode(double seconds, bool bambu_firmware, const char *comment = "ooze wait");
 
+// ---- Ooze curve and start boost -----------------------------------------------------
+//
+// A nozzle left retracted oozes quickly at first and then less and less, until it has lost about all
+// it can: the reprime that puts back what it lost after t seconds is
+//     max * (1 - 0.5^(t / half_life)).
+// The ooze ladder measures both numbers. A half-life of 0 or less means the nozzle loses the maximum
+// at once.
+double ooze_curve_reprime(double max_mm, double half_life_s, double seconds);
+
+// A reprime pushed in place refills the nozzle, but a large nozzle still starts its line thin while
+// the pressure builds. The start boost pushes more filament along the first part of the line instead:
+// most at the restart point, tapering to nothing at the boost distance. Returns the share of the boost
+// that goes between from_mm and to_mm along the line (0..1).
+double ooze_boost_share(double from_mm, double to_mm, double distance_mm);
+
+// Seconds for a move that starts and ends at rest: it accelerates at accel up to speed, cruises and
+// brakes. accel <= 0 means no acceleration limit.
+double ooze_move_time(double distance, double speed, double accel);
+
+// Seconds a piece of G-code takes to run, for timing how long the nozzle is off the print. Reads
+// G0/G1 moves (each from rest to rest), M204 accelerations, SET_VELOCITY_LIMIT, and G4 and M400 dwells.
+// start is the position in the G-code's own coordinates; e moves count only when they move no axis.
+struct OozeGCodeClock
+{
+    Vec3d  position     = Vec3d::Zero();
+    double print_accel  = 0.; // acceleration of extruding moves; 0: none known
+    double travel_accel = 0.; // acceleration of travel moves; 0: same as print_accel
+    double feedrate     = 0.; // mm/min
+    bool   relative_e   = true;
+    double e            = 0.; // extruder position, with absolute E
+};
+double ooze_gcode_time(const std::string &gcode, OozeGCodeClock clock);
+
 // ---- Ooze & reprime calibration plate ----------------------------------------------
 //
 // Ooze ladder: one row of cylinders per wait time, one column per reprime rate. A cylinder's
@@ -98,6 +139,9 @@ std::string ooze_dwell_gcode(double seconds, bool bambu_firmware, const char *co
 //   gap: too little; a blob: too much).
 // Reprime check: one row of taller cylinders, all with the same wait, around one reprime
 //   length, to confirm a value from the ladder over many layers.
+// Boost ladder: one row per wait, one column per start boost. Every cylinder reprimes what the ooze
+//   curve gives for its real time off (A), so the columns show which boost fills the start of the
+//   line without a blob.
 enum class OozeStopKind
 {
     Tower, // wait over an ooze tower behind each cylinder
@@ -105,15 +149,22 @@ enum class OozeStopKind
     Hover, // hover over the part, as during a long travel
 };
 
+enum class OozeCalibTest
+{
+    Ladder,
+    Check,
+    Boost,
+};
+
 struct OozeCalibParams
 {
-    bool                ladder        = true;
+    OozeCalibTest       test          = OozeCalibTest::Ladder;
     OozeStopKind        stop          = OozeStopKind::Tower;
     bool                purge         = false; // reprime check only: purge into the chute or tower, restart normally
     // Waits are like travels by default: no cooling and the normal retraction.
     int                 cool          = 0;     // degrees to cool by while waiting over a tower or the chute
     double              extra_retract = 0.;    // retracted further while waiting
-    double              restart_dwell = 1.;    // seconds to let the pressure build after the reprime
+    double              restart_dwell = 0.;    // seconds to let the pressure build after the reprime
     // Diameter of each tower's footprint, brim included; needed for Tower stops.
     double              tower_footprint = 0.;
     // Ooze ladder
@@ -129,6 +180,15 @@ struct OozeCalibParams
     double              check_step    = 0.5;
     int                 boxes         = 5;
     int                 check_layers  = 12;
+    // Boost ladder; the ooze curve and the boost distance go into the print settings.
+    std::vector<double> boost_waits   {1., 4., 10.};
+    double              ooze_max      = 2.;  // mm of filament
+    double              half_life     = 5.;  // seconds
+    double              boost_start   = 0.;  // mm of filament, first column
+    double              boost_step    = 1.;
+    int                 boost_count   = 5;   // columns
+    double              boost_distance = 15.; // mm along the line
+    int                 boost_layers  = 12;
 };
 
 struct OozeCalibObject
@@ -141,7 +201,7 @@ struct OozeCalibLayout
 {
     std::vector<OozeCalibObject> objects;
     double diameter   = 0.; // cylinder diameter
-    double brim       = 0.; // brim width around each cylinder
+    double brim       = 0.; // room kept around each cylinder (the cylinders print without a brim)
     double tower_dy   = 0.; // distance from a cylinder's centre to its tower's, 0 without towers
     int    layers     = 0;
     int    stops      = 0;  // stops in the whole print

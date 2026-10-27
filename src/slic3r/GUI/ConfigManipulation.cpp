@@ -1190,11 +1190,11 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_line("single_extruder_multi_material_priming", !bSEMM && have_prime_tower && supports_wipe_tower_2 && !is_belt_printer);
 
     // OrcaGarageBuild: the tower's diameter, walls and brim also size the towers of ooze test objects.
-    for (auto el : {"ooze_tower_x", "ooze_tower_y", "ooze_tower_travel_time"})
+    for (auto el : {"ooze_tower_x", "ooze_tower_y", "ooze_tower_travel_time", "ooze_tower_drain"})
         toggle_line(el, config->opt_bool("ooze_tower"));
     // The ooze tower restarts with the reprime settings too.
-    for (auto el : {"ooze_reprime_base", "ooze_reprime_amount", "ooze_reprime_interval", "ooze_reprime_time_limit",
-                    "ooze_reprime_min_time", "ooze_reprime_settle"})
+    for (auto el : {"ooze_reprime_max", "ooze_reprime_half_life", "ooze_reprime_min_time", "ooze_reprime_boost",
+                    "ooze_reprime_boost_distance", "ooze_reprime_settle"})
         toggle_line(el, config->opt_bool("ooze_reprime") || config->opt_bool("ooze_tower"));
 
     bool use_cyclic_ordering = config->opt_enum<ToolChangeOrderingType>("toolchange_ordering") == ToolChangeOrderingType::Cyclic;

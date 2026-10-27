@@ -11,6 +11,7 @@
 #include "test_helpers.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <sstream>
@@ -319,26 +320,49 @@ TEST_CASE("An ooze tower that does not fit on the bed is an error", "[OozeStop][
 
 namespace {
 
-// Two 4 mm cubes 140 mm apart at 50 mm/s travel, so a trip between them takes about 2.8 s, optionally with the print's
-// ooze tower between and behind them and with reprime by travel time.
-std::string slice_two_cubes(bool tower, bool reprime)
+// Ooze curve for these tests: at most 4 mm, half of it every 2 s.
+constexpr double ooze_max       = 4.;
+constexpr double ooze_half_life = 2.;
+
+double curve(double seconds) { return ooze_max * (1. - std::exp2(-seconds / ooze_half_life)); }
+
+// Settings for reprime by the time off the print, with a start boost of the given length over 4 mm.
+void set_ooze_reprime(DynamicPrintConfig &config, bool reprime, double boost)
+{
+    config.set_deserialize_strict({
+        {"ooze_reprime", reprime ? 1 : 0},
+        {"ooze_reprime_max", ooze_max},
+        {"ooze_reprime_half_life", ooze_half_life},
+        {"ooze_reprime_min_time", 1},
+        {"ooze_reprime_boost", boost},
+        {"ooze_reprime_boost_distance", 4},
+        {"ooze_reprime_settle", 0.5},
+    });
+}
+
+// Two 4 mm cubes 140 mm apart at 50 mm/s travel and 500 mm/s^2, so a trip between them takes at least
+// 140 / 50 + 50 / 500 = 2.9 s, optionally with the print's ooze tower between and behind them, draining for 2 s,
+// and with reprime by the time off the print.
+std::string slice_two_cubes(bool tower, bool reprime, double boost = 0.)
 {
     DynamicPrintConfig config = ooze_config();
     config.set_deserialize_strict({
         {"travel_speed", 50},
+        {"initial_layer_travel_speed", 50},
+        {"default_acceleration", 500},
+        {"travel_acceleration", 500},
+        {"initial_layer_travel_acceleration", 500},
+        {"inner_wall_speed", 20},
+        {"outer_wall_speed", 20},
+        {"initial_layer_speed", 20},
+        {"filament_max_volumetric_speed", 10},
         {"ooze_tower", tower ? 1 : 0},
         {"ooze_tower_x", 100},
         {"ooze_tower_y", 140},
         {"ooze_tower_travel_time", 2},
-        // Reprime 1 mm plus 0.5 mm per second off the print, for at most 2 s.
-        {"ooze_reprime", reprime ? 1 : 0},
-        {"ooze_reprime_base", 1},
-        {"ooze_reprime_amount", 0.5},
-        {"ooze_reprime_interval", 1},
-        {"ooze_reprime_time_limit", 2},
-        {"ooze_reprime_min_time", 1},
-        {"ooze_reprime_settle", 0.5},
+        {"ooze_tower_drain", 2},
     });
+    set_ooze_reprime(config, reprime, boost);
     Print print;
     Model model;
     Test::init_print(std::vector<TriangleMesh>{Test::cube(4.), Test::cube(4.)}, print, model, config);
@@ -356,7 +380,7 @@ struct ReprimeNote
     double reprime;
     double pushed = 0.;
 };
-std::vector<ReprimeNote> reprime_notes(const std::string &gcode)
+std::vector<ReprimeNote> reprime_notes(const std::string &gcode, const char *format = "; OOZE reprime: %lf s off the print, reprime %lf mm")
 {
     std::vector<ReprimeNote> out;
     std::istringstream       in(gcode);
@@ -364,13 +388,93 @@ std::vector<ReprimeNote> reprime_notes(const std::string &gcode)
     bool                     want_push = false;
     while (std::getline(in, line)) {
         double t = 0., r = 0.;
-        if (std::sscanf(line.c_str(), "; OOZE reprime: %lf s off the print, reprime %lf mm", &t, &r) == 2) {
+        if (std::sscanf(line.c_str(), format, &t, &r) == 2) {
             out.push_back({t, r});
             want_push = true;
         } else if (want_push && line.rfind("G1 E", 0) == 0) {
             out.back().pushed = std::stod(line.substr(4));
             want_push         = false;
         }
+    }
+    return out;
+}
+
+// The line that starts after each marker: the filament pushed over its first `distance` mm beyond the line's own
+// flow (taken from the rest of the line), and the highest volumetric flow there, in mm^3/s.
+struct BoostedStart
+{
+    double extra    = 0.;
+    double max_flow = 0.;
+};
+std::vector<BoostedStart> boosted_starts(const std::string &gcode, const std::string &marker, double distance)
+{
+    const double filament_area = 0.25 * PI * 1.75 * 1.75;
+    struct Piece
+    {
+        double length, e, feedrate;
+    };
+    std::vector<BoostedStart> out;
+    std::vector<Piece>        pieces;
+    bool                      active = false;
+    const auto finish = [&]() {
+        active = false;
+        // The line's own flow, from the part past the boost.
+        double at = 0., tail_length = 0., tail_e = 0.;
+        for (const Piece &piece : pieces) {
+            if (at >= distance - 1e-6) {
+                tail_length += piece.length;
+                tail_e += piece.e;
+            }
+            at += piece.length;
+        }
+        if (tail_length < 0.5)
+            return;
+        BoostedStart start;
+        at = 0.;
+        for (const Piece &piece : pieces) {
+            if (at < distance - 1e-6) {
+                start.extra += piece.e - tail_e / tail_length * piece.length;
+                start.max_flow = std::max(start.max_flow, piece.e * filament_area / piece.length * piece.feedrate / 60.);
+            }
+            at += piece.length;
+        }
+        out.push_back(start);
+    };
+    std::istringstream in(gcode);
+    std::string        line;
+    double             x = 0., y = 0., f = 0.;
+    while (std::getline(in, line)) {
+        if (line.rfind(marker, 0) == 0) {
+            pieces.clear();
+            active = true;
+            continue;
+        }
+        if (line.rfind("G1 ", 0) != 0)
+            continue;
+        const std::string code = line.substr(0, line.find(';'));
+        double            nx = x, ny = y, e = 0.;
+        bool              has_e = false;
+        std::istringstream words(code.substr(3));
+        std::string        word;
+        while (words >> word) {
+            const double v = std::stod(word.substr(1));
+            switch (word[0]) {
+            case 'X': nx = v; break;
+            case 'Y': ny = v; break;
+            case 'E': e = v; has_e = true; break;
+            case 'F': f = v; break;
+            default: break;
+            }
+        }
+        const double length = std::hypot(nx - x, ny - y);
+        x = nx;
+        y = ny;
+        if (!active)
+            continue;
+        if (length > 1e-9 && has_e && e > 0.)
+            pieces.push_back({length, e, f});
+        else if (!pieces.empty() && ((length > 1e-9) || (has_e && e < 0.)))
+            finish();
     }
     return out;
 }
@@ -384,16 +488,18 @@ TEST_CASE("Long travels between parts go through the print's ooze tower, which g
     // Each layer travels once between the cubes, and the rest of the tower's layer is printed at its end.
     CHECK(count_of(gcode, "; OOZE tower: visit") >= ooze_layers);
     CHECK(count_of(gcode, "; OOZE tower: rest of the layer") == ooze_layers);
-    // Each visit lets the nozzle drain over the tower for the ooze time limit.
+    // Each visit lets the nozzle drain over the tower for the drain time.
     CHECK(count_of(gcode, "G4 P2000") == count_of(gcode, "; OOZE tower: visit"));
 
-    // After the tower the part restarts with the retraction and the reprime for a drained nozzle: 1 + 0.5 * 2 mm,
-    // even though reprime by travel time is off. Then it settles.
-    const std::vector<std::vector<double>> pushes = push_groups(gcode, "; OOZE tower: visit", 2);
-    REQUIRE_FALSE(pushes.empty());
-    for (const std::vector<double> &visit : pushes) {
-        REQUIRE(visit.size() == 2);
-        CHECK_THAT(visit[1], WithinAbs(ooze_retraction + 2., 1e-4));
+    // After the tower the part restarts with the reprime the ooze curve gives for the whole time away, the
+    // drain included, even though reprime after travels is off. Then it settles.
+    const std::vector<ReprimeNote> notes = reprime_notes(gcode);
+    CHECK(notes.size() == count_of(gcode, "; OOZE tower: visit"));
+    for (const ReprimeNote &note : notes) {
+        INFO("away " << note.time << " s");
+        CHECK(note.time > 2.);
+        CHECK_THAT(note.reprime, WithinAbs(curve(note.time), 0.01));
+        CHECK_THAT(note.pushed, WithinAbs(note.reprime, 1e-3));
     }
     CHECK(count_of(gcode, "G4 P500") >= count_of(gcode, "; OOZE tower: visit"));
 }
@@ -406,22 +512,90 @@ TEST_CASE("Without the ooze tower option, travels go straight", "[OozeStop][Ooze
     CHECK(gcode.find("; OOZE reprime") == std::string::npos);
 }
 
-TEST_CASE("A restart after a long travel reprimes by the travel's time", "[OozeStop][OozeReprime]")
+TEST_CASE("A restart after a long travel reprimes by the ooze curve for the time off the print", "[OozeStop][OozeReprime]")
 {
     const std::string              gcode = slice_two_cubes(false, true);
     const std::vector<ReprimeNote> notes = reprime_notes(gcode);
 
-    // Every travel between the cubes takes more than 2 s; shorter travels inside a cube restart normally.
+    // Every travel between the cubes takes at least 2.9 s with its acceleration, plus its retraction and lift;
+    // shorter travels inside a cube restart normally.
     size_t long_travels = 0;
     for (const ReprimeNote &note : notes) {
         INFO("travel " << note.time << " s");
         CHECK(note.time >= 1.);
-        CHECK_THAT(note.reprime, WithinAbs(1. + 0.5 * std::min(note.time, 2.), 1e-3));
+        CHECK_THAT(note.reprime, WithinAbs(curve(note.time), 0.01));
         CHECK_THAT(note.pushed, WithinAbs(note.reprime, 1e-3));
-        if (note.time > 2.)
+        if (note.time > 2.9)
             ++long_travels;
     }
     CHECK(long_travels >= size_t(ooze_layers - 1));
     // Each reprime settles before the nozzle moves.
     CHECK(count_of(gcode, "G4 P500") == notes.size());
+}
+
+TEST_CASE("A start boost spreads extra filament over the start of the line, within the volumetric limit", "[OozeStop][OozeReprime]")
+{
+    // 1 mm of boost over the first 4 mm of each line after a reprime.
+    const std::string               gcode  = slice_two_cubes(false, true, 1.);
+    const std::vector<BoostedStart> starts = boosted_starts(gcode, "; OOZE reprime", 4.);
+    REQUIRE(starts.size() >= size_t(ooze_layers - 1));
+    for (const BoostedStart &start : starts) {
+        CHECK_THAT(start.extra, WithinAbs(1., 0.01));
+        // The filament allows 10 mm^3/s; the boosted start slows down to stay within it.
+        CHECK(start.max_flow <= 10.05);
+    }
+
+    // Without a boost, the start of the line is like the rest of it.
+    for (const BoostedStart &start : boosted_starts(slice_two_cubes(false, true, 0.), "; OOZE reprime", 4.))
+        CHECK_THAT(start.extra, WithinAbs(0., 0.01));
+}
+
+TEST_CASE("A stop with A reprimes by the ooze curve for its real time off the object, then boosts", "[OozeStop]")
+{
+    DynamicPrintConfig config = ooze_config();
+    config.set_deserialize_strict({{"default_acceleration", 500}, {"outer_wall_acceleration", 300}, {"inner_wall_acceleration", 300},
+                                   {"travel_acceleration", 500}, {"inner_wall_speed", 20}, {"outer_wall_speed", 20},
+                                   {"initial_layer_speed", 20}, {"filament_max_volumetric_speed", 10}});
+    set_ooze_reprime(config, false, 0.);
+    const std::string gcode = slice_ooze_cube("ooze W3 A B0.8 T", config, false);
+
+    const std::vector<ReprimeNote> notes =
+        reprime_notes(gcode, "; OOZE restart: %lf s off the object | reprime %lf mm");
+    REQUIRE(notes.size() == ooze_layers);
+    for (const ReprimeNote &note : notes) {
+        INFO("off " << note.time << " s");
+        // The wait plus the moves over and off the tower.
+        CHECK(note.time > 3.);
+        CHECK(note.time < 10.);
+        CHECK_THAT(note.reprime, WithinAbs(curve(note.time), 0.01));
+    }
+    // The restart pushes the retraction back, then that reprime.
+    const std::vector<std::vector<double>> restarts = push_groups(gcode, "; OOZE restart", 1);
+    REQUIRE(restarts.size() == ooze_layers);
+    for (size_t i = 0; i < restarts.size(); ++i) {
+        REQUIRE(restarts[i].size() == 1);
+        CHECK_THAT(restarts[i].front(), WithinAbs(ooze_retraction + notes[i].reprime, 1e-3));
+    }
+    for (const BoostedStart &start : boosted_starts(gcode, "; OOZE restart", 4.))
+        CHECK_THAT(start.extra, WithinAbs(0.8, 0.01));
+
+    // After the tower's walls, the trips to the hollow and back run faster than the walls were printed.
+    std::istringstream in(gcode);
+    std::string        line;
+    int                accel = 0, after_tower = 0;
+    bool               in_tower = false;
+    std::vector<int>   wait_accels;
+    while (std::getline(in, line)) {
+        if (line == "; FEATURE: Prime tower" || line == ";TYPE:Prime tower")
+            in_tower = true;
+        if (line.rfind("M204 S", 0) == 0)
+            accel = std::stoi(line.substr(6));
+        if (in_tower && line.rfind("G4 P3000", 0) == 0) {
+            wait_accels.push_back(accel);
+            in_tower = false;
+        }
+    }
+    REQUIRE(wait_accels.size() == size_t(ooze_layers));
+    for (int a : wait_accels)
+        CHECK(a > 300);
 }

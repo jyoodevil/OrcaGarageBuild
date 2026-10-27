@@ -1904,7 +1904,8 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
 
     // Test type
     auto test_box = new wxStaticBoxSizer(new LabeledStaticBox(this, _L("Test")), wxHORIZONTAL);
-    m_rbTest = new RadioGroup(this, {_L("Ooze ladder"), _L("Reprime check")}, wxHORIZONTAL);
+    // Same order as OozeCalibTest.
+    m_rbTest = new RadioGroup(this, {_L("Ooze ladder"), _L("Reprime check"), _L("Boost ladder")}, wxHORIZONTAL);
     test_box->Add(m_rbTest, 0, wxALL | wxEXPAND, FromDIP(4));
     v_sizer->Add(test_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
@@ -1921,9 +1922,17 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     const wxString wait_str          = _L("Wait time: ");
     const wxString reprime_mid_str   = _L("Middle reprime length: ");
     const wxString boxes_str         = _L("Cylinders: ");
+    const wxString ooze_max_str      = _L("Maximum ooze: ");
+    const wxString half_life_str     = _L("Ooze half-life: ");
+    const wxString boost_start_str   = _L("First start boost: ");
+    const wxString boost_step_str    = _L("Start boost step: ");
+    const wxString boost_count_str   = _L("Start boosts: ");
+    const wxString boost_dist_str    = _L("Boost distance: ");
     const int      text_max          = GetTextMax(this, {cool_str, retract_str, settle_str, waits_str, reprime_base_str,
                                                         rate_start_str, rate_step_str, reprime_step_str, reprime_count_str,
-                                                        layers_str, wait_str, reprime_mid_str, boxes_str});
+                                                        layers_str, wait_str, reprime_mid_str, boxes_str, ooze_max_str,
+                                                        half_life_str, boost_start_str, boost_step_str, boost_count_str,
+                                                        boost_dist_str});
     const wxSize   st_size(text_max, -1);
     const wxSize   ti_size = FromDIP(wxSize(120, -1));
 
@@ -1971,9 +1980,13 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     v_sizer->Add(stop_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
     // Ooze ladder
-    wxString waits;
-    for (double w : m_params.waits)
-        waits += (waits.empty() ? "" : ", ") + wxString::FromDouble(w);
+    const auto list_of = [](const std::vector<double>& values) {
+        wxString list;
+        for (double v : values)
+            list += (list.empty() ? "" : ", ") + wxString::FromDouble(v);
+        return list;
+    };
+    const wxString waits = list_of(m_params.waits);
     m_ladder_box      = new LabeledStaticBox(this, _L("Ooze ladder"));
     auto ladder_sizer = new wxStaticBoxSizer(m_ladder_box, wxVERTICAL);
     m_tiWaits         = add_row(ladder_sizer, waits_str, waits, _L("s"), list_validator);
@@ -2006,6 +2019,37 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     check_sizer->Add(purge_row, 0, wxLEFT | wxTOP | wxBOTTOM, FromDIP(3));
     v_sizer->Add(check_sizer, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
+    // Boost ladder. It starts from the ooze curve already in the print settings, when there is one.
+    const DynamicPrintConfig& print = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    if (print.has("ooze_reprime_max") && print.opt_float("ooze_reprime_max") > 0.) {
+        m_params.ooze_max  = print.opt_float("ooze_reprime_max");
+        m_params.half_life = print.opt_float("ooze_reprime_half_life");
+    }
+    if (print.has("ooze_reprime_boost_distance") && print.opt_float("ooze_reprime_boost_distance") > 0.)
+        m_params.boost_distance = print.opt_float("ooze_reprime_boost_distance");
+    m_boost_box      = new LabeledStaticBox(this, _L("Boost ladder"));
+    auto boost_sizer = new wxStaticBoxSizer(m_boost_box, wxVERTICAL);
+    m_tiBoostWaits   = add_row(boost_sizer, waits_str, list_of(m_params.boost_waits), _L("s"), list_validator);
+    m_tiBoostWaits->SetToolTip(_L("Comma-separated list of wait times, one row of cylinders each, front to back. Each stop also "
+                                  "takes a few seconds to go to the tower and back; the G-code notes the real time off the "
+                                  "cylinder at every restart."));
+    m_tiOozeMax      = add_row(boost_sizer, ooze_max_str, wxString::FromDouble(m_params.ooze_max), _L("mm"), number_validator);
+    m_tiOozeMax->SetToolTip(_L("Filament the nozzle loses when it is left long enough to stop oozing, from the ooze ladders. "
+                               "Saved in the print settings, under Others > Ooze reprime."));
+    m_tiHalfLife     = add_row(boost_sizer, half_life_str, wxString::FromDouble(m_params.half_life), _L("s"), number_validator);
+    m_tiHalfLife->SetToolTip(_L("Time the nozzle takes to lose half of the maximum ooze. Every cylinder reprimes what these two "
+                                "give for its time off the cylinder."));
+    m_tiBoostStart   = add_row(boost_sizer, boost_start_str, wxString::FromDouble(m_params.boost_start), _L("mm"), number_validator);
+    m_tiBoostStart->SetToolTip(_L("Extra filament pushed along the start of the line after the reprime, for the first column."));
+    m_tiBoostStep    = add_row(boost_sizer, boost_step_str, wxString::FromDouble(m_params.boost_step), _L("mm"), number_validator);
+    m_tiBoostCount   = add_row(boost_sizer, boost_count_str, wxString::Format("%d", m_params.boost_count), "", number_validator);
+    m_tiBoostCount->SetToolTip(_L("Number of start boosts, one column of cylinders each, left to right."));
+    m_tiBoostDistance = add_row(boost_sizer, boost_dist_str, wxString::FromDouble(m_params.boost_distance), _L("mm"), number_validator);
+    m_tiBoostDistance->SetToolTip(_L("Length of line each boost is spread over, most at the restart point. Saved in the print "
+                                     "settings."));
+    m_tiBoostLayers  = add_row(boost_sizer, layers_str, wxString::Format("%d", m_params.boost_layers), "", number_validator);
+    v_sizer->Add(boost_sizer, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+
     auto help = new wxStaticText(this, wxID_ANY,
         _L("A reprime length is the filament pushed back in after a stop, in place of the extra length on restart. "
            "Each cylinder's name holds its stop, for example \"ooze W30 R1.5 C40 D2 T\"; give any object a name like "
@@ -2017,6 +2061,7 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     v_sizer->Add(dlg_btns, 0, wxEXPAND);
     dlg_btns->GetOK()->Bind(wxEVT_BUTTON, &Ooze_Reprime_Test_Dlg::on_start, this);
 
+    m_rbTest->SetSelection(int(m_params.test));
     m_rbTest->Bind(wxEVT_COMMAND_RADIOBOX_SELECTED, [this](wxCommandEvent& e) { update_controls(); e.Skip(); });
     m_rbStop->Bind(wxEVT_COMMAND_RADIOBOX_SELECTED, [this](wxCommandEvent& e) { update_controls(); e.Skip(); });
     // The printer can change between openings; the dialog is kept for the session.
@@ -2040,14 +2085,17 @@ void Ooze_Reprime_Test_Dlg::update_controls()
         m_rbStop->SetSelection(int(OozeStopKind::Tower));
     m_stChuteNote->Show(!m_has_chute);
 
-    const bool hover  = m_rbStop->GetSelection() == int(OozeStopKind::Hover);
-    const bool ladder = m_rbTest->GetSelection() == 0;
+    const bool          hover = m_rbStop->GetSelection() == int(OozeStopKind::Hover);
+    const OozeCalibTest test  = OozeCalibTest(m_rbTest->GetSelection());
     m_tiCool->Enable(!hover);
     for (TextInput* ti : {m_tiWaits, m_tiReprimeBase, m_tiReprimeStart, m_tiReprimeStep, m_tiReprimeCount, m_tiLadderLayers})
-        ti->Enable(ladder);
+        ti->Enable(test == OozeCalibTest::Ladder);
     for (TextInput* ti : {m_tiWait, m_tiReprimeMid, m_tiCheckStep, m_tiBoxes, m_tiCheckLayers})
-        ti->Enable(!ladder);
-    m_cbPurge->Enable(!ladder && !hover);
+        ti->Enable(test == OozeCalibTest::Check);
+    for (TextInput* ti : {m_tiBoostWaits, m_tiOozeMax, m_tiHalfLife, m_tiBoostStart, m_tiBoostStep, m_tiBoostCount, m_tiBoostDistance,
+                          m_tiBoostLayers})
+        ti->Enable(test == OozeCalibTest::Boost);
+    m_cbPurge->Enable(test == OozeCalibTest::Check && !hover);
     Layout();
     Fit();
 }
@@ -2066,8 +2114,24 @@ void Ooze_Reprime_Test_Dlg::on_start(wxCommandEvent& event)
         return true;
     };
 
+    // Comma-separated wait times.
+    const auto read_list = [](TextInput* ti, std::vector<double>& out) {
+        out.clear();
+        wxStringTokenizer tokens(ti->GetTextCtrl()->GetValue(), ",; ");
+        while (tokens.HasMoreTokens()) {
+            const wxString token = tokens.GetNextToken();
+            double         value = 0.;
+            if (token.empty())
+                continue;
+            if (!token.ToCDouble(&value))
+                return false;
+            out.push_back(value);
+        }
+        return true;
+    };
+
     OozeCalibParams params = m_params;
-    params.ladder = m_rbTest->GetSelection() == 0;
+    params.test   = OozeCalibTest(m_rbTest->GetSelection());
     params.stop   = OozeStopKind(m_rbStop->GetSelection());
     if (!m_has_chute && params.stop == OozeStopKind::Chute)
         params.stop = OozeStopKind::Tower;
@@ -2078,23 +2142,15 @@ void Ooze_Reprime_Test_Dlg::on_start(wxCommandEvent& event)
                 read(m_tiSettle, params.restart_dwell);
     params.cool = int(std::lround(cool));
 
-    params.waits.clear();
-    wxStringTokenizer tokens(m_tiWaits->GetTextCtrl()->GetValue(), ",; ");
-    while (ok && tokens.HasMoreTokens()) {
-        const wxString token = tokens.GetNextToken();
-        double         wait  = 0.;
-        if (token.empty())
-            continue;
-        if (token.ToCDouble(&wait))
-            params.waits.push_back(wait);
-        else
-            ok = false;
-    }
-    ok = ok && read(m_tiReprimeBase, params.reprime_base) && read(m_tiReprimeStart, params.rate_start) &&
-         read(m_tiReprimeStep, params.rate_step) &&
+    ok = ok && read_list(m_tiWaits, params.waits) && read(m_tiReprimeBase, params.reprime_base) &&
+         read(m_tiReprimeStart, params.rate_start) && read(m_tiReprimeStep, params.rate_step) &&
          read_int(m_tiReprimeCount, params.reprime_count) && read_int(m_tiLadderLayers, params.ladder_layers) &&
          read(m_tiWait, params.wait) && read(m_tiReprimeMid, params.reprime_mid) && read(m_tiCheckStep, params.check_step) &&
-         read_int(m_tiBoxes, params.boxes) && read_int(m_tiCheckLayers, params.check_layers);
+         read_int(m_tiBoxes, params.boxes) && read_int(m_tiCheckLayers, params.check_layers) &&
+         read_list(m_tiBoostWaits, params.boost_waits) && read(m_tiOozeMax, params.ooze_max) && read(m_tiHalfLife, params.half_life) &&
+         read(m_tiBoostStart, params.boost_start) && read(m_tiBoostStep, params.boost_step) &&
+         read_int(m_tiBoostCount, params.boost_count) && read(m_tiBoostDistance, params.boost_distance) &&
+         read_int(m_tiBoostLayers, params.boost_layers);
     if (!ok) {
         MessageDialog msg_dlg(this, _L("Please enter a number in every field, and separate the wait times with commas."), wxEmptyString,
                               wxICON_WARNING | wxOK);

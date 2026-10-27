@@ -8826,60 +8826,52 @@ void PrintConfigDef::init_fff_params()
 
     def = this->add("ooze_tower_travel_time", coFloat);
     def->label = L("Travel time");
-    def->tooltip = L("Travels that take longer than this, at the travel speed, and leave the inside of the part go "
-                     "through the ooze tower. The ooze ladder in Hover mode shows how long the nozzle can travel before "
-                     "its restart suffers.");
+    def->tooltip = L("Travels that would take longer than this, counting the travel acceleration, and leave the inside "
+                     "of the part go through the ooze tower.");
     def->sidetext = L("s");
     def->min = 0.;
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(5.));
 
-    // OrcaGarageBuild: reprime by travel time.
+    def = this->add("ooze_tower_drain", coFloat);
+    def->label = L("Drain time");
+    def->tooltip = L("How long the nozzle waits over the ooze tower's hollow on each visit, so it oozes there instead of "
+                     "on the part. About four ooze half-lives empties it. The restart after a visit reprimes by the ooze "
+                     "curve for the whole time away. 0 to only wipe on the tower.");
+    def->sidetext = L("s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(30.));
+
+    // OrcaGarageBuild: reprime by the time off the print.
     def = this->add("ooze_reprime", coBool);
     def->label = L("Reprime after travels");
-    def->tooltip = L("Push back what the nozzle oozes during a travel, by how long the travel takes: after a travel of "
-                     "at least the minimum travel time, printing restarts with the base reprime plus the reprime rate "
-                     "times the travel's time (up to the ooze time limit), in place of the extra length on restart. The "
-                     "reprime is pushed at a speed the hot end can melt, then the nozzle settles before it moves. A "
-                     "visit to the ooze tower always restarts this way. The ooze ladder gives the values.");
+    def->tooltip = L("Push back what the nozzle oozes while it is off the print. After a retracted travel of at least the "
+                     "minimum travel time, printing restarts by pushing back what the ooze curve gives for the time "
+                     "off the print, from the retraction to the restart, in place of the extra length on restart. The "
+                     "reprime is pushed at a speed the hot end can melt; then the start boost goes into the first part "
+                     "of the line. A visit to the ooze tower always restarts this way. The ooze ladders give the "
+                     "values.");
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = this->add("ooze_reprime_base", coFloat);
-    def->label = L("Base reprime");
-    def->tooltip = L("Filament pushed back after every travel that takes at least the minimum travel time, whatever its "
-                     "length. The ooze ladder's base reprime.");
+    def = this->add("ooze_reprime_max", coFloat);
+    def->label = L("Maximum ooze");
+    def->tooltip = L("Filament the nozzle loses when it is left retracted long enough to stop oozing, in millimetres of "
+                     "filament. After t seconds off the print the reprime is this times 1 - 0.5^(t / half-life).");
     def->sidetext = L("mm");
     def->min = 0.;
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(0.));
 
-    def = this->add("ooze_reprime_amount", coFloat);
-    def->label = L("Reprime");
-    def->tooltip = L("Filament pushed back for each interval of travel time below: the nozzle's ooze rate. The ooze "
-                     "ladder's best rate in mm/s is this amount per 1 second.");
-    def->sidetext = L("mm");
-    def->min = 0.;
-    def->mode = comSimple;
-    def->set_default_value(new ConfigOptionFloat(0.));
-
-    def = this->add("ooze_reprime_interval", coFloat);
-    def->label = L("Per");
-    def->tooltip = L("Travel time that the reprime above is for.");
+    def = this->add("ooze_reprime_half_life", coFloat);
+    def->label = L("Ooze half-life");
+    def->tooltip = L("Time the nozzle takes to lose half of the maximum ooze. It loses three quarters in two "
+                     "half-lives, and nearly all of it in four.");
     def->sidetext = L("s");
     def->min = 0.;
     def->mode = comSimple;
-    def->set_default_value(new ConfigOptionFloat(1.));
-
-    def = this->add("ooze_reprime_time_limit", coFloat);
-    def->label = L("Ooze time limit");
-    def->tooltip = L("How long the nozzle keeps oozing before it runs dry. A longer travel reprimes as if it took this "
-                     "long, and the nozzle waits this long over the ooze tower's hollow on each visit. 0 for no limit, "
-                     "and no wait at the tower.");
-    def->sidetext = L("s");
-    def->min = 0.;
-    def->mode = comSimple;
-    def->set_default_value(new ConfigOptionFloat(60.));
+    def->set_default_value(new ConfigOptionFloat(5.));
 
     def = this->add("ooze_reprime_min_time", coFloat);
     def->label = L("Minimum travel time");
@@ -8887,12 +8879,32 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("s");
     def->min = 0.;
     def->mode = comSimple;
-    def->set_default_value(new ConfigOptionFloat(1.));
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("ooze_reprime_boost", coFloat);
+    def->label = L("Start boost");
+    def->tooltip = L("Extra filament pushed along the start of the line after a reprime, most at the restart point and "
+                     "tapering to nothing at the boost distance. A large nozzle starts its line thin after a restart "
+                     "because the pressure takes time to build; the boost builds it while the nozzle moves, instead of "
+                     "in a blob at the restart point. The start of the line slows down if it would push more than the "
+                     "filament's maximum volumetric speed. The boost ladder gives the value.");
+    def->sidetext = L("mm");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("ooze_reprime_boost_distance", coFloat);
+    def->label = L("Boost distance");
+    def->tooltip = L("Length of line the start boost is spread over.");
+    def->sidetext = L("mm");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(15.));
 
     def = this->add("ooze_reprime_settle", coFloat);
     def->label = L("Settle after the reprime");
-    def->tooltip = L("Time the nozzle waits at the restart point after the reprime, so the pressure builds up before it "
-                     "prints. Use the settle time the ooze ladder was printed with.");
+    def->tooltip = L("Time the nozzle waits at the restart point after the reprime, before it moves. Anything that comes "
+                     "out meanwhile stays at the restart point, so the start boost usually works better.");
     def->sidetext = L("s");
     def->min = 0.;
     def->mode = comSimple;
@@ -10550,7 +10562,8 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
     static std::set<std::string> ignore = {
         "acceleration", "scale", "rotate", "duplicate", "duplicate_grid",
         "bed_size",
-        "print_center", "g0", "wipe_tower_per_color_wipe", "ooze_tower_reprime", 
+        "print_center", "g0", "wipe_tower_per_color_wipe", "ooze_tower_reprime", "ooze_reprime_base", "ooze_reprime_amount",
+        "ooze_reprime_interval", "ooze_reprime_time_limit",
         "support_sharp_tails","support_remove_small_overhangs", "support_with_sheath",
         "tree_support_collision_resolution", "tree_support_with_infill",
         "max_volumetric_speed", "max_print_speed",

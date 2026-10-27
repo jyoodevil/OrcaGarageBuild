@@ -164,6 +164,9 @@ public:
     void set_is_first_layer(bool bval) { m_is_first_layer = bval; }
     GCodeFlavor get_gcode_flavor() const { return config.gcode_flavor; }
     void invalidate_acceleration() { m_last_acceleration = 0; m_last_travel_acceleration = 0; }
+    // Accelerations last written, 0 when unknown. The travel one is only set on flavors with a separate travel acceleration.
+    unsigned int last_acceleration() const { return m_last_acceleration; }
+    unsigned int last_travel_acceleration() const { return m_last_travel_acceleration; }
     void invalidate_jerk() { m_last_jerk = 0; }
 
     // Axis remap: permute/negate/reverse axes in G-code output.

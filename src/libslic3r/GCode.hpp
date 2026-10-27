@@ -876,6 +876,13 @@ protected:
     std::optional<double>               m_ooze_restart_extra;
     // Seconds to wait after that unretract, for the pressure to build before the first move.
     std::optional<double>               m_ooze_restart_dwell;
+    // Start boost of the stop, pushed along the first part of the line after the restart.
+    std::optional<double>               m_ooze_restart_boost;
+    // Start boost being pushed: mm of filament still to spread, over how long a stretch of line, and how much of
+    // that stretch is done. A travel or a retraction ends it.
+    double                              m_ooze_boost          = 0.;
+    double                              m_ooze_boost_distance = 0.;
+    double                              m_ooze_boost_done     = 0.;
     // Object, copy and layer of the last stop, so a second visit on the same layer doesn't stop again.
     std::tuple<const PrintObject*, size_t, int> m_ooze_last_stop{nullptr, 0, -1};
     // Towers of ooze test objects with T in their name, by object and copy.
@@ -891,6 +898,15 @@ protected:
     bool                                m_ooze_reprime_forced  = false;
     bool                                m_ooze_extruded        = false;
     double      ooze_travel_speed();
+    // Whether travels are timed for reprime by the time off the print.
+    bool        ooze_timing_wanted() const { return m_config.ooze_reprime.value || m_ooze_tower.has_value() || !m_ooze_specs.empty(); }
+    // The writer's position, feedrate and accelerations, to time the G-code written from now on.
+    OozeGCodeClock ooze_clock();
+    // Extra filament for the next length mm of a line while a start boost is on.
+    double      ooze_boost_take(double length);
+    // Writes a line of a path while a start boost is on, the boosted part in short pieces (see GCode.cpp).
+    void        ooze_boost_extrude(std::string &gcode, const Vec2d &from, const Vec2d &to, double dE, double F,
+                                   const std::string &description, const std::string &cooling_marker);
     void        ooze_setup(const Print &print);
     void        ooze_start_object(const PrintObject &object, size_t instance_id, const Layer *object_layer);
     std::string ooze_park(const Point &restart_point);
@@ -899,6 +915,8 @@ protected:
     // Fast moves for trips that are not part of a measured wait; returns the G-code and sets the speed.
     std::string ooze_fast_moves(double &speed);
     std::string ooze_extra_retract(const OozeStopSpec &spec);
+    std::string ooze_restart(const OozeStop &stop, bool purge, double off_time);
+    double      ooze_purge_length(const OozeStop &stop) const;
     double      ooze_push_speed() const;
     std::string ooze_purge(double length, const std::string &comment);
     std::string ooze_reprime(double length);
