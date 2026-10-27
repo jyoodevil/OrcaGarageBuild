@@ -10285,7 +10285,15 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                     flow_description = description + Slic3r::format(" | Old Flow Value: %0.5f Length: %0.5f",oldE, line_length);
                 }
             }
-            // OrcaGarageBuild: the variable-speed pieces are short; each takes its share of a start boost whole.
+            // OrcaGarageBuild: a start boost goes out in short pieces within the volumetric limit, as in the branch above,
+            // returning to this piece's speed when it ends.
+            if (m_ooze_boost > 0. && !path.z_contoured && sloped == nullptr) {
+                this->ooze_boost_extrude(gcode, prev.head<2>(), p.head<2>(), dE, last_set_speed,
+                                         flow_description.empty() ? description : flow_description, comment);
+                check_and_insert_timelapse(processed_point.p.to_point());
+                prev = p;
+                continue;
+            }
             dE += this->ooze_boost_take(line_length);
             if (path.z_contoured) {
                 Vec2d    dest2d = p.head<2>();
