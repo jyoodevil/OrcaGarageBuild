@@ -342,11 +342,12 @@ void set_ooze_reprime(DynamicPrintConfig &config, bool reprime, double boost)
 
 // Two 4 mm cubes 140 mm apart at 50 mm/s travel and 500 mm/s^2, so a trip between them takes at least
 // 140 / 50 + 50 / 500 = 2.9 s, optionally with the print's ooze tower between and behind them, draining for 2 s,
-// and with reprime by the time off the print.
-std::string slice_two_cubes(bool tower, bool reprime, double boost = 0.)
+// and with reprime by the time off the print. One wall makes every line after a restart a loop of about 12 mm.
+std::string slice_two_cubes(bool tower, bool reprime, double boost = 0., int walls = 2)
 {
     DynamicPrintConfig config = ooze_config();
     config.set_deserialize_strict({
+        {"wall_loops", walls},
         {"travel_speed", 50},
         {"initial_layer_travel_speed", 50},
         {"default_acceleration", 500},
@@ -396,6 +397,19 @@ std::vector<ReprimeNote> reprime_notes(const std::string &gcode, const char *for
             want_push         = false;
         }
     }
+    return out;
+}
+
+// The 40 lines after the first marker, on one line, to show in a failed check.
+std::string after_first(const std::string &gcode, const std::string &marker)
+{
+    const size_t at = gcode.find(marker);
+    if (at == std::string::npos)
+        return "(no " + marker + ")";
+    std::istringstream in(gcode.substr(at));
+    std::string        line, out;
+    for (int i = 0; i < 40 && std::getline(in, line); ++i)
+        out += line + " | ";
     return out;
 }
 
@@ -536,8 +550,9 @@ TEST_CASE("A restart after a long travel reprimes by the ooze curve for the time
 TEST_CASE("A start boost spreads extra filament over the start of the line, within the volumetric limit", "[OozeStop][OozeReprime]")
 {
     // 1 mm of boost over the first 4 mm of each line after a reprime.
-    const std::string               gcode  = slice_two_cubes(false, true, 1.);
+    const std::string               gcode  = slice_two_cubes(false, true, 1., 1);
     const std::vector<BoostedStart> starts = boosted_starts(gcode, "; OOZE reprime", 4.);
+    INFO(after_first(gcode, "; OOZE reprime"));
     REQUIRE(starts.size() >= size_t(ooze_layers - 1));
     for (const BoostedStart &start : starts) {
         CHECK_THAT(start.extra, WithinAbs(1., 0.01));
@@ -546,14 +561,16 @@ TEST_CASE("A start boost spreads extra filament over the start of the line, with
     }
 
     // Without a boost, the start of the line is like the rest of it.
-    for (const BoostedStart &start : boosted_starts(slice_two_cubes(false, true, 0.), "; OOZE reprime", 4.))
+    const std::vector<BoostedStart> plain = boosted_starts(slice_two_cubes(false, true, 0., 1), "; OOZE reprime", 4.);
+    CHECK(plain.size() == starts.size());
+    for (const BoostedStart &start : plain)
         CHECK_THAT(start.extra, WithinAbs(0., 0.01));
 }
 
 TEST_CASE("A stop with A reprimes by the ooze curve for its real time off the object, then boosts", "[OozeStop]")
 {
     DynamicPrintConfig config = ooze_config();
-    config.set_deserialize_strict({{"default_acceleration", 500}, {"outer_wall_acceleration", 300}, {"inner_wall_acceleration", 300},
+    config.set_deserialize_strict({{"wall_loops", 1}, {"default_acceleration", 500}, {"outer_wall_acceleration", 300}, {"inner_wall_acceleration", 300},
                                    {"travel_acceleration", 500}, {"inner_wall_speed", 20}, {"outer_wall_speed", 20},
                                    {"initial_layer_speed", 20}, {"filament_max_volumetric_speed", 10}});
     set_ooze_reprime(config, false, 0.);
@@ -576,7 +593,10 @@ TEST_CASE("A stop with A reprimes by the ooze curve for its real time off the ob
         REQUIRE(restarts[i].size() == 1);
         CHECK_THAT(restarts[i].front(), WithinAbs(ooze_retraction + notes[i].reprime, 1e-3));
     }
-    for (const BoostedStart &start : boosted_starts(gcode, "; OOZE restart", 4.))
+    const std::vector<BoostedStart> starts = boosted_starts(gcode, "; OOZE restart", 4.);
+    INFO(after_first(gcode, "; OOZE restart"));
+    CHECK(starts.size() == size_t(ooze_layers));
+    for (const BoostedStart &start : starts)
         CHECK_THAT(start.extra, WithinAbs(0.8, 0.01));
 
     // After the tower's walls, the trips to the hollow and back run faster than the walls were printed.
