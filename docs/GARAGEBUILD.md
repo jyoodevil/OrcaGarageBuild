@@ -215,6 +215,11 @@ the tests are tagged `[ReportedNozzle]`.
 
 ## Next update list
 
+- **Fit the Ooze and reprime dialog on one screen.** With three tests the dialog is taller than a laptop or single
+  monitor, so the lower fields and the OK button end up off screen. Show only the selected test's box (Ooze ladder,
+  Reprime check or Boost ladder) and hide the others instead of greying them out, and refit the dialog when the test
+  changes.
+
 - **Wipe over infill before a travel.** Before a long travel inside the part, move the nozzle over the nearest
   internal infill and wipe there, rather than along the last path (which can be the outer wall), so nothing it
   carries ends up on a wall.
