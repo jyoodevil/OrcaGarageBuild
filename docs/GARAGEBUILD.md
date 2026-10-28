@@ -221,6 +221,11 @@ the tests are tagged `[ReportedNozzle]`.
   changes. Name the column counts for what they are ("Start boosts" reads like a boost length, and "Reprime rates"
   like a rate): "Number of boosts (columns)" and "Number of rates (columns)".
 
+- **Open the filament settings on the nozzle flow type in use.** A filament preset keeps temperatures, flow and
+  fan for each nozzle flow type (Standard, High Flow), and the tab opens on Standard even when the printer is set to
+  High Flow, so edits can land in the column the slicer doesn't use. Open it on the printer's type, and say on the
+  switch which one slicing uses.
+
 - **Wipe over infill before a travel.** Before a long travel inside the part, move the nozzle over the nearest
   internal infill and wipe there, rather than along the last path (which can be the outer wall), so nothing it
   carries ends up on a wall.
