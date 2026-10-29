@@ -226,6 +226,10 @@ the tests are tagged `[ReportedNozzle]`.
   High Flow, so edits can land in the column the slicer doesn't use. Open it on the printer's type, and say on the
   switch which one slicing uses.
 
+- **Check where slicing errors jump to.** The organic support tip and branch diameter errors were reported to open
+  the material settings instead of **Process > Support** (seen with an object selected and the options only shown in
+  Advanced mode).
+
 - **Wipe over infill before a travel.** Before a long travel inside the part, move the nozzle over the nearest
   internal infill and wipe there, rather than along the last path (which can be the outer wall), so nothing it
   carries ends up on a wall.
