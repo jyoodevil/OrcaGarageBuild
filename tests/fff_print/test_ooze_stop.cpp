@@ -718,6 +718,7 @@ TEST_CASE("Before a jump over open air the nozzle wipes on the infill until litt
     {
         double seconds, air, left, was;
         double xmin = 1e9, xmax = -1e9;
+        int    moves = 0;
         bool   moved_z = false, extruded = false;
         double off = -1.;
     };
@@ -744,13 +745,16 @@ TEST_CASE("Before a jump over open air the nozzle wipes on the infill until litt
         if (!in_wipe || !is_move(line))
             continue;
         const std::string code = line.substr(0, line.find(';'));
-        // The wipe runs at its own 10 mm/s; the lift or the jump that follows ends it.
-        if (code.find("F600") == std::string::npos || code.find('Z') != std::string::npos || code.find('E') != std::string::npos) {
+        // The wipe runs at its own 10 mm/s, written once; the lift or the jump at its own speed ends it.
+        const size_t f = code.find('F');
+        if ((f != std::string::npos && std::stod(code.substr(f + 1)) != 600.) || code.find('Z') != std::string::npos ||
+            code.find('E') != std::string::npos) {
             in_wipe = false;
             continue;
         }
         const size_t at = code.find('X');
         if (at != std::string::npos) {
+            ++wipes.back().moves;
             const double x = std::stod(code.substr(at + 1));
             wipes.back().xmin = std::min(wipes.back().xmin, x);
             wipes.back().xmax = std::max(wipes.back().xmax, x);
@@ -760,12 +764,13 @@ TEST_CASE("Before a jump over open air the nozzle wipes on the infill until litt
     // One jump per layer after the first section is printed.
     REQUIRE(wipes.size() >= 29);
     for (const Wipe &w : wipes) {
-        INFO("wipe " << w.seconds << " s, " << w.air << " mm over air, " << w.left << " of " << w.was << " mm, x "
-                     << w.xmin << " to " << w.xmax << ", restart after " << w.off << " s");
+        INFO("wipe " << w.seconds << " s, " << w.moves << " moves, " << w.air << " mm over air, " << w.left << " of " << w.was
+                     << " mm, x " << w.xmin << " to " << w.xmax << ", restart after " << w.off << " s");
         CHECK(w.was > limit);
         CHECK(w.left <= limit + 0.01);
         CHECK(w.seconds > 0.5);
         CHECK(w.air > 20.);
+        CHECK(w.moves > 1);
         // Back and forth inside the section, not over the gap.
         CHECK(w.xmax - w.xmin < section_size);
         CHECK(((w.xmax < 100. - section_gap / 2.) || (w.xmin > 100. + section_gap / 2.)));
