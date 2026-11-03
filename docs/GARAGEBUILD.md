@@ -236,6 +236,14 @@ the tests are tagged `[ReportedNozzle]`.
 
 ## Next update list
 
+- **No start boost on ironing.** A restart that lands on an ironing pass gets the full start boost, which is sized
+  for a full line, so it leaves a raised streak on the ironed surface. Skip the boost (and push only the reprime) when
+  the first line after a restart is ironing or another line far thinner than the boost was measured on.
+
+- **No infill wipe between support branches.** Strings between tree support branches come off with the support, but
+  the infill wipe still runs before those jumps (311 of 384 wipes, about 24 minutes, on the full spice holder). Wipe
+  only when the jump ends on the part.
+
 - **Show the ooze towers in the Prepare view.** Draw the print's ooze tower and the towers behind ooze test objects on
   the plate, let the print's tower be dragged into place like the prime tower, and have Arrange leave room for them.
   Today they only show after slicing, and slicing reports an overlap.
