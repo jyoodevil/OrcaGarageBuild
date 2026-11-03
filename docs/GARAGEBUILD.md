@@ -160,7 +160,8 @@ speed), the travel with its acceleration, and any detour that **Avoid crossing w
 G-code to the first part is not counted.
 
 The reprime is pushed after the retraction goes back, at half the filament's maximum volumetric speed, so it melts as
-it goes in. A large nozzle still starts its line thin while the pressure builds, so the **Start boost** then pushes
+it goes in. A restart onto ironing restarts normally: ironing barely extrudes, and a reprime and boost sized for a
+full line would leave a streak on the ironed surface. A large nozzle still starts its line thin while the pressure builds, so the **Start boost** then pushes
 more filament along the first **Boost distance** of the line: most at the restart point, tapering to nothing. Where
 the line plus the boost would push more than the filament's maximum volumetric speed, that stretch slows down. The
 boost carries on across paths until the next travel or retraction. **Settle after the reprime** waits at the restart
@@ -187,8 +188,8 @@ a jump of j seconds, Maximum ooze × 0.5^(t / half-life) × (1 − 0.5^(j / half
   forth at layer height along the infill or support it just printed (the last 40 mm of it, at **Infill wipe speed**),
   so the ooze sticks there instead of following the nozzle. It wipes until the curve leaves no more than this much
   filament for the jump, or for **Longest infill wipe**. The restart then reprimes for the whole time off, wipe
-  included. It only wipes after sparse or internal solid infill and support, never on walls or surfaces, and needs
-  **Reprime after travels**. Each halving of the ooze on a jump costs about one half-life of wiping, so it is a trade
+  included. It only wipes after sparse or internal solid infill and support, never on walls or surfaces, and not
+  between two supports, whose strings come off with them. It needs **Reprime after travels**. Each halving of the ooze on a jump costs about one half-life of wiping, so it is a trade
   of print time for strings; the note `; OOZE wipe: ...` at each wipe gives the time and the ooze before and after.
 
 The tests are tagged `[OozeStrings]`.
@@ -235,14 +236,6 @@ This replaces the `Bambu Nozzle Fix.bat` relabelling script. The code is in `src
 the tests are tagged `[ReportedNozzle]`.
 
 ## Next update list
-
-- **No start boost on ironing.** A restart that lands on an ironing pass gets the full start boost, which is sized
-  for a full line, so it leaves a raised streak on the ironed surface. Skip the boost (and push only the reprime) when
-  the first line after a restart is ironing or another line far thinner than the boost was measured on.
-
-- **No infill wipe between support branches.** Strings between tree support branches come off with the support, but
-  the infill wipe still runs before those jumps (311 of 384 wipes, about 24 minutes, on the full spice holder). Wipe
-  only when the jump ends on the part.
 
 - **Show the ooze towers in the Prepare view.** Draw the print's ooze tower and the towers behind ooze test objects on
   the plate, let the print's tower be dragged into place like the prime tower, and have Arrange leave room for them.

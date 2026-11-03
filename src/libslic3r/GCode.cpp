@@ -9365,6 +9365,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         if (m_ooze_restart_boost && ooze_can_push)
             ooze_boost = *m_ooze_restart_boost;
     } else if ((m_ooze_reprime_forced || m_config.ooze_reprime.value) && ooze_can_push &&
+               // Ironing barely extrudes, so a nozzle that oozed irons as it is: the reprime and boost, sized for a
+               // full line, would leave a streak on the ironed surface.
+               path.role() != erIroning &&
                (m_ooze_reprime_forced ||
                 (m_writer.get_extruder_retracted_length((int) m_writer.filament()->id()) > 0. &&
                  m_ooze_travel_time >= m_config.ooze_reprime_min_time.value))) {
@@ -10640,8 +10643,9 @@ std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string
 
         Point last_post_before_retract = this->last_pos();
         gcode += this->retract(false, false, lift_type, false, role);
-        // OrcaGarageBuild: leave the ooze on the infill before a jump over open air.
-        if (ooze_timed && m_config.ooze_wipe_limit.value > 0.)
+        // OrcaGarageBuild: leave the ooze on the infill before a jump over open air, except between supports,
+        // whose strings come off with them.
+        if (ooze_timed && m_config.ooze_wipe_limit.value > 0. && !(is_support(role) && is_support(m_ooze_trail_role)))
             gcode += this->ooze_infill_wipe(travel, ooze_gcode_time(gcode.substr(ooze_travel_from), ooze_travel_clock));
         // When "Wipe while retracting" is enabled, then extruder moves to another position, and travel from this position can cross perimeters.
         // Because of it, it is necessary to call avoid crossing perimeters again with new starting point after calling retraction()

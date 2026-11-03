@@ -776,3 +776,39 @@ TEST_CASE("Before a jump over open air the nozzle wipes on the infill until litt
     // Off by default.
     CHECK(count_of(slice_two_sections({}), "; OOZE wipe") == 0);
 }
+
+TEST_CASE("A restart onto ironing pushes no reprime or boost", "[OozeStop][OozeReprime]")
+{
+    const std::string gcode = slice_two_sections({{"top_shell_layers", 2}, {"ironing_type", "top"}, {"ooze_reprime_boost", 1}});
+    REQUIRE(count_role_tags(gcode, "Ironing") > 0);
+
+    // Every restart after a retraction: the role of the line it starts, and whether it reprimed.
+    size_t             ironing_restarts = 0, ironing_reprimed = 0, other_reprimed = 0;
+    bool               restarting = false, reprimed = false;
+    std::string        role;
+    std::istringstream in(gcode);
+    std::string        line;
+    while (std::getline(in, line)) {
+        if (line.rfind("; FEATURE: ", 0) == 0)
+            role = line.substr(11);
+        else if (line.rfind(";TYPE:", 0) == 0)
+            role = line.substr(6);
+        else if (line.rfind("; OOZE reprime", 0) == 0)
+            reprimed = true;
+        else if (line.rfind("G1 E", 0) == 0 && std::stod(line.substr(4)) > 0.)
+            restarting = true;
+        else if (restarting && line.rfind("G1 X", 0) == 0 && line.find(" E") != std::string::npos) {
+            if (role == "Ironing") {
+                ++ironing_restarts;
+                ironing_reprimed += reprimed ? 1 : 0;
+            } else
+                other_reprimed += reprimed ? 1 : 0;
+            restarting = reprimed = false;
+        }
+    }
+    INFO(after_first(gcode, ";TYPE:Ironing"));
+    REQUIRE(ironing_restarts > 0);
+    CHECK(ironing_reprimed == 0);
+    // The jumps between the sections still reprime.
+    CHECK(other_reprimed >= 29);
+}
