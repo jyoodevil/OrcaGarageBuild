@@ -619,3 +619,160 @@ TEST_CASE("A stop with A reprimes by the ooze curve for its real time off the ob
     for (int a : wait_accels)
         CHECK(a > 300);
 }
+
+namespace {
+
+// One object of two 12 mm square sections 40 mm apart, at 0.4 mm layers with one wall and sparse infill, so each
+// layer jumps over 28 mm of open air between them at 20 mm/s and 500 mm/s^2, with reprime by the time off the print.
+constexpr double section_size = 12.;
+constexpr double section_gap  = 28.;
+std::string slice_two_sections(std::initializer_list<ConfigBase::SetDeserializeItem> items)
+{
+    DynamicPrintConfig config = ooze_config();
+    config.set_deserialize_strict({
+        {"wall_loops", 1},
+        {"sparse_infill_density", "25%"},
+        {"sparse_infill_pattern", "rectilinear"},
+        {"travel_speed", 20},
+        {"initial_layer_travel_speed", 20},
+        {"default_acceleration", 500},
+        {"travel_acceleration", 500},
+        {"initial_layer_travel_acceleration", 500},
+    });
+    set_ooze_reprime(config, true, 0.);
+    config.set_deserialize_strict(items);
+    TriangleMesh mesh  = Test::cube(section_size);
+    TriangleMesh other = Test::cube(section_size);
+    other.translate(float(section_size + section_gap), 0.f, 0.f);
+    mesh.merge(other);
+    Print print;
+    Model model;
+    Test::init_print(std::vector<TriangleMesh>{mesh}, print, model, config);
+    place_on_bed(*model.objects.front(), Vec2d(100., 100.));
+    print.apply(model, config);
+    return Test::gcode(print);
+}
+
+// Per layer, the sections the extrusions go to in turn, 0 for the left one and 1 for the right one, with repeats
+// merged.
+std::vector<std::vector<int>> section_visits(const std::string &gcode)
+{
+    std::vector<std::vector<int>> layers;
+    std::istringstream            in(gcode);
+    std::string                   line;
+    double                        x = 0.;
+    while (std::getline(in, line)) {
+        if (line == ";LAYER_CHANGE" || line == "; CHANGE_LAYER") {
+            layers.emplace_back();
+            continue;
+        }
+        if (!is_move(line) || layers.empty())
+            continue;
+        const std::string code = line.substr(0, line.find(';'));
+        double            e    = 0.;
+        bool              has_x = false;
+        std::istringstream words(code);
+        std::string        word;
+        while (words >> word) {
+            if (word[0] == 'X') {
+                x     = std::stod(word.substr(1));
+                has_x = true;
+            } else if (word[0] == 'E')
+                e = std::stod(word.substr(1));
+        }
+        if (!has_x || !(e > 0.))
+            continue;
+        const int side = x < 100. ? 0 : 1;
+        if (layers.back().empty() || layers.back().back() != side)
+            layers.back().push_back(side);
+    }
+    return layers;
+}
+
+} // namespace
+
+TEST_CASE("Chained sections start each layer on the section the last layer ended on", "[OozeStop][OozeStrings]")
+{
+    const std::vector<std::vector<int>> layers = section_visits(slice_two_sections({{"ooze_chain_sections", 1}}));
+    // 12 mm at 0.4 mm layers.
+    REQUIRE(layers.size() == 30);
+    for (size_t i = 0; i < layers.size(); ++i) {
+        INFO("layer " << i);
+        // Each section once per layer: a single jump between them.
+        REQUIRE(layers[i].size() == 2);
+        if (i > 0)
+            CHECK(layers[i].front() == layers[i - 1].back());
+    }
+}
+
+TEST_CASE("Before a jump over open air the nozzle wipes on the infill until little ooze is left for the jump",
+          "[OozeStop][OozeStrings]")
+{
+    constexpr double  limit = 0.2;
+    const std::string gcode = slice_two_sections({{"ooze_wipe_limit", limit}, {"ooze_wipe_speed", 10}});
+    INFO(after_first(gcode, "; OOZE wipe"));
+
+    // "; OOZE wipe: <s> s along <role> before <air> mm over open air, ooze on the way <left> mm instead of <was> mm",
+    // then the wipe's moves, at layer height and inside the section it leaves, and the restart's note.
+    struct Wipe
+    {
+        double seconds, air, left, was;
+        double xmin = 1e9, xmax = -1e9;
+        bool   moved_z = false, extruded = false;
+        double off = -1.;
+    };
+    std::vector<Wipe>  wipes;
+    std::istringstream in(gcode);
+    std::string        line;
+    bool               in_wipe = false;
+    while (std::getline(in, line)) {
+        Wipe         w{};
+        const size_t before = line.find(" before ");
+        if (line.rfind("; OOZE wipe:", 0) == 0 && before != std::string::npos &&
+            std::sscanf(line.c_str(), "; OOZE wipe: %lf s", &w.seconds) == 1 &&
+            std::sscanf(line.c_str() + before, " before %lf mm over open air, ooze on the way %lf mm instead of %lf mm",
+                        &w.air, &w.left, &w.was) == 3) {
+            wipes.push_back(w);
+            in_wipe = true;
+            continue;
+        }
+        double t = 0.;
+        if (!wipes.empty() && wipes.back().off < 0. && std::sscanf(line.c_str(), "; OOZE reprime: %lf s off the print", &t) == 1) {
+            wipes.back().off = t;
+            continue;
+        }
+        if (!in_wipe || !is_move(line))
+            continue;
+        const std::string code = line.substr(0, line.find(';'));
+        // The wipe runs at its own 10 mm/s; the lift or the jump that follows ends it.
+        if (code.find("F600") == std::string::npos || code.find('Z') != std::string::npos || code.find('E') != std::string::npos) {
+            in_wipe = false;
+            continue;
+        }
+        const size_t at = code.find('X');
+        if (at != std::string::npos) {
+            const double x = std::stod(code.substr(at + 1));
+            wipes.back().xmin = std::min(wipes.back().xmin, x);
+            wipes.back().xmax = std::max(wipes.back().xmax, x);
+        }
+    }
+
+    // One jump per layer after the first section is printed.
+    REQUIRE(wipes.size() >= 29);
+    for (const Wipe &w : wipes) {
+        INFO("wipe " << w.seconds << " s, " << w.air << " mm over air, " << w.left << " of " << w.was << " mm, x "
+                     << w.xmin << " to " << w.xmax << ", restart after " << w.off << " s");
+        CHECK(w.was > limit);
+        CHECK(w.left <= limit + 0.01);
+        CHECK(w.seconds > 0.5);
+        CHECK(w.air > 20.);
+        // Back and forth inside the section, not over the gap.
+        CHECK(w.xmax - w.xmin < section_size);
+        CHECK(((w.xmax < 100. - section_gap / 2.) || (w.xmin > 100. + section_gap / 2.)));
+        // The restart reprimes for the wipe as well as the jump.
+        CHECK(w.off > w.seconds);
+    }
+
+    // Off by default.
+    CHECK(count_of(slice_two_sections({}), "; OOZE wipe") == 0);
+}

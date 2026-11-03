@@ -8910,6 +8910,46 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(0.));
 
+    // OrcaGarageBuild: fewer strings over open air.
+    def = this->add("ooze_chain_sections", coBool);
+    def->label = L("Start each layer where the last ended");
+    def->tooltip = L("Print the separate sections of a layer, and its support, in a chain that starts at the section "
+                     "nearest the nozzle, so each layer starts where the last one ended and runs back the other way. "
+                     "The nozzle crosses open air less often and over shorter distances, so less ooze strings between "
+                     "the sections. Otherwise every layer starts at the same end and the support goes first.");
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("ooze_wipe_limit", coFloat);
+    def->label = L("Infill wipe: ooze allowed per jump");
+    def->tooltip = L("Before the nozzle leaves a section over open air, it wipes back and forth at layer height along "
+                     "the infill or support it just printed, so the ooze sticks there instead of stringing behind the "
+                     "nozzle. It wipes until the ooze curve (Maximum ooze and Ooze half-life) leaves no more than this "
+                     "much filament to come out on the way, so long jumps get long wipes and short ones none. The "
+                     "restart reprimes for the whole time off the print. Each halving costs about one ooze half-life "
+                     "per jump. Needs Reprime after travels. 0 to turn it off.");
+    def->sidetext = L("mm");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("ooze_wipe_max_time", coFloat);
+    def->label = L("Longest infill wipe");
+    def->tooltip = L("The infill wipe before a jump stops after this long, whatever the ooze left.");
+    def->sidetext = L("s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(20.));
+
+    def = this->add("ooze_wipe_speed", coFloat);
+    def->label = L("Infill wipe speed");
+    def->tooltip = L("Speed of the infill wipe. It runs over the last 40 mm of infill or support at most, so a slow "
+                     "wipe spreads the ooze along it.");
+    def->sidetext = L("mm/s");
+    def->min = 1.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(10.));
+
     def = this->add("wipe_tower_rotation_angle", coFloat);
     def->label = L("Wipe tower rotation angle");
     def->tooltip = L("Wipe tower rotation angle with respect to X axis.");

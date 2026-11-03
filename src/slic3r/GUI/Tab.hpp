@@ -337,6 +337,8 @@ public:
     // its Extruder and Motion ability pages edit.
     bool            m_extruder_switch_variants = false;
     std::vector<NozzleVolumeType> m_actual_nozzle_volumes;
+    // Filament preset and active column the filament tab's switch was last moved to (see update_extruder_variants).
+    std::string                   m_variant_active_key;
 
 public:
 	// BBS
@@ -501,6 +503,7 @@ public:
 
 	std::vector<wxString>  generate_extruder_options();
     NozzleVolumeType       get_actual_nozzle_volume_type(int extruder_id);
+    int                    active_filament_variant();
 
 protected:
 	void			create_line_with_widget(ConfigOptionsGroup* optgroup, const std::string& opt_key, const std::string& path, widget_t widget);

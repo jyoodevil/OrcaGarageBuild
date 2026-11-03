@@ -117,7 +117,8 @@ double ooze_boost_share(double from_mm, double to_mm, double distance_mm);
 double ooze_move_time(double distance, double speed, double accel);
 
 // Seconds a piece of G-code takes to run, for timing how long the nozzle is off the print. Reads
-// G0/G1 moves (each from rest to rest), M204 accelerations, SET_VELOCITY_LIMIT, and G4 and M400 dwells.
+// G0/G1 moves and G2/G3 arcs (each from rest to rest; an arc ending where it starts is a full circle, as
+// in a spiral lift), M204 accelerations, SET_VELOCITY_LIMIT, and G4 and M400 dwells.
 // start is the position in the G-code's own coordinates; e moves count only when they move no axis.
 struct OozeGCodeClock
 {

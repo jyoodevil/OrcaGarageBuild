@@ -1196,6 +1196,9 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     for (auto el : {"ooze_reprime_max", "ooze_reprime_half_life", "ooze_reprime_min_time", "ooze_reprime_boost",
                     "ooze_reprime_boost_distance", "ooze_reprime_settle"})
         toggle_line(el, config->opt_bool("ooze_reprime") || config->opt_bool("ooze_tower"));
+    toggle_line("ooze_wipe_limit", config->opt_bool("ooze_reprime"));
+    for (auto el : {"ooze_wipe_max_time", "ooze_wipe_speed"})
+        toggle_line(el, config->opt_bool("ooze_reprime") && config->opt_float("ooze_wipe_limit") > 0.);
 
     bool use_cyclic_ordering = config->opt_enum<ToolChangeOrderingType>("toolchange_ordering") == ToolChangeOrderingType::Cyclic;
     toggle_line("toolchange_cyclic_order", use_cyclic_ordering);

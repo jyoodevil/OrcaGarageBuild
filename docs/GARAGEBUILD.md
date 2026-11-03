@@ -155,8 +155,9 @@ at least **Minimum travel time**, printing restarts with
     reprime = Maximum ooze × (1 − 0.5^(time off / Ooze half-life))
 
 in place of the extra length on restart. The time off runs from the retraction to the restart, and is worked out from
-the G-code the travel writes: the retraction and wipe, the Z hop, the travel with its acceleration, and any detour
-that **Avoid crossing walls** adds. The travel from the start G-code to the first part is not counted.
+the G-code the travel writes: the retraction and wipe, the Z hop (a spiral lift runs its whole circle at the Z travel
+speed), the travel with its acceleration, and any detour that **Avoid crossing walls** adds. The travel from the start
+G-code to the first part is not counted.
 
 The reprime is pushed after the retraction goes back, at half the filament's maximum volumetric speed, so it melts as
 it goes in. A large nozzle still starts its line thin while the pressure builds, so the **Start boost** then pushes
@@ -171,6 +172,26 @@ From the calibration: **Maximum ooze** and **Ooze half-life** come from the weig
 Travels that stay inside the part leave their drips on the infill. Turn on **Avoid crossing walls** so travels stay
 inside the part, and **Reduce infill retraction** if the drips should go into the infill without a retraction. Use
 the inner/outer wall order so restarts land on an inner wall rather than the outer one.
+
+### Ooze strings
+
+A nozzle oozes all the way across a jump over open air between separate sections of a layer, and that ooze strings
+between them. How much comes out on a jump follows the same curve: with the nozzle t seconds after its retraction and
+a jump of j seconds, Maximum ooze × 0.5^(t / half-life) × (1 − 0.5^(j / half-life)). Two settings cut it down:
+
+- **Start each layer where the last ended** prints the sections of a layer, and its support, in a chain from the
+  section nearest the nozzle. Each layer starts on the section the last one ended on and runs back the other way, and
+  the support is printed where the chain reaches it rather than first, so the nozzle crosses open air less often and
+  over shorter distances. It costs no time.
+- **Infill wipe: ooze allowed per jump** makes the nozzle, before it leaves a section over open air, wipe back and
+  forth at layer height along the infill or support it just printed (the last 40 mm of it, at **Infill wipe speed**),
+  so the ooze sticks there instead of following the nozzle. It wipes until the curve leaves no more than this much
+  filament for the jump, or for **Longest infill wipe**. The restart then reprimes for the whole time off, wipe
+  included. It only wipes after sparse or internal solid infill and support, never on walls or surfaces, and needs
+  **Reprime after travels**. Each halving of the ooze on a jump costs about one half-life of wiping, so it is a trade
+  of print time for strings; the note `; OOZE wipe: ...` at each wipe gives the time and the ooze before and after.
+
+The tests are tagged `[OozeStrings]`.
 
 ### Ooze tower
 
@@ -214,25 +235,6 @@ This replaces the `Bambu Nozzle Fix.bat` relabelling script. The code is in `src
 the tests are tagged `[ReportedNozzle]`.
 
 ## Next update list
-
-- **Fit the Ooze and reprime dialog on one screen.** With three tests the dialog is taller than a laptop or single
-  monitor, so the lower fields and the OK button end up off screen. Show only the selected test's box (Ooze ladder,
-  Reprime check or Boost ladder) and hide the others instead of greying them out, and refit the dialog when the test
-  changes. Name the column counts for what they are ("Start boosts" reads like a boost length, and "Reprime rates"
-  like a rate): "Number of boosts (columns)" and "Number of rates (columns)".
-
-- **Open the filament settings on the nozzle flow type in use.** A filament preset keeps temperatures, flow and
-  fan for each nozzle flow type (Standard, High Flow), and the tab opens on Standard even when the printer is set to
-  High Flow, so edits can land in the column the slicer doesn't use. Open it on the printer's type, and say on the
-  switch which one slicing uses.
-
-- **Check where slicing errors jump to.** The organic support tip and branch diameter errors were reported to open
-  the material settings instead of **Process > Support** (seen with an object selected and the options only shown in
-  Advanced mode).
-
-- **Wipe over infill before a travel.** Before a long travel inside the part, move the nozzle over the nearest
-  internal infill and wipe there, rather than along the last path (which can be the outer wall), so nothing it
-  carries ends up on a wall.
 
 - **Show the ooze towers in the Prepare view.** Draw the print's ooze tower and the towers behind ooze test objects on
   the plate, let the print's tower be dragged into place like the prime tower, and have Arrange leave room for them.

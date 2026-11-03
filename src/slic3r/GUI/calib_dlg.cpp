@@ -1917,7 +1917,7 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     const wxString rate_start_str    = _L("First reprime rate: ");
     const wxString rate_step_str     = _L("Reprime rate step: ");
     const wxString reprime_step_str  = _L("Reprime step: ");
-    const wxString reprime_count_str = _L("Reprime rates: ");
+    const wxString reprime_count_str = _L("Number of rates (columns): ");
     const wxString layers_str        = _L("Layers: ");
     const wxString wait_str          = _L("Wait time: ");
     const wxString reprime_mid_str   = _L("Middle reprime length: ");
@@ -1926,7 +1926,7 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     const wxString half_life_str     = _L("Ooze half-life: ");
     const wxString boost_start_str   = _L("First start boost: ");
     const wxString boost_step_str    = _L("Start boost step: ");
-    const wxString boost_count_str   = _L("Start boosts: ");
+    const wxString boost_count_str   = _L("Number of boosts (columns): ");
     const wxString boost_dist_str    = _L("Boost distance: ");
     const int      text_max          = GetTextMax(this, {cool_str, retract_str, settle_str, waits_str, reprime_base_str,
                                                         rate_start_str, rate_step_str, reprime_step_str, reprime_count_str,
@@ -1988,7 +1988,7 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     };
     const wxString waits = list_of(m_params.waits);
     m_ladder_box      = new LabeledStaticBox(this, _L("Ooze ladder"));
-    auto ladder_sizer = new wxStaticBoxSizer(m_ladder_box, wxVERTICAL);
+    auto ladder_sizer = m_ladder_sizer = new wxStaticBoxSizer(m_ladder_box, wxVERTICAL);
     m_tiWaits         = add_row(ladder_sizer, waits_str, waits, _L("s"), list_validator);
     m_tiWaits->SetToolTip(_L("Comma-separated list of wait times, one row of cylinders each, front to back."));
     m_tiReprimeBase   = add_row(ladder_sizer, reprime_base_str, wxString::FromDouble(m_params.reprime_base), _L("mm"), number_validator);
@@ -2004,7 +2004,7 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
 
     // Reprime check
     m_check_box      = new LabeledStaticBox(this, _L("Reprime check"));
-    auto check_sizer = new wxStaticBoxSizer(m_check_box, wxVERTICAL);
+    auto check_sizer = m_check_sizer = new wxStaticBoxSizer(m_check_box, wxVERTICAL);
     m_tiWait         = add_row(check_sizer, wait_str, wxString::FromDouble(m_params.wait), _L("s"), number_validator);
     m_tiReprimeMid   = add_row(check_sizer, reprime_mid_str, wxString::FromDouble(m_params.reprime_mid), _L("mm"), number_validator);
     m_tiCheckStep    = add_row(check_sizer, reprime_step_str, wxString::FromDouble(m_params.check_step), _L("mm"), number_validator);
@@ -2028,7 +2028,7 @@ Ooze_Reprime_Test_Dlg::Ooze_Reprime_Test_Dlg(wxWindow* parent, wxWindowID id, Pl
     if (print.has("ooze_reprime_boost_distance") && print.opt_float("ooze_reprime_boost_distance") > 0.)
         m_params.boost_distance = print.opt_float("ooze_reprime_boost_distance");
     m_boost_box      = new LabeledStaticBox(this, _L("Boost ladder"));
-    auto boost_sizer = new wxStaticBoxSizer(m_boost_box, wxVERTICAL);
+    auto boost_sizer = m_boost_sizer = new wxStaticBoxSizer(m_boost_box, wxVERTICAL);
     m_tiBoostWaits   = add_row(boost_sizer, waits_str, list_of(m_params.boost_waits), _L("s"), list_validator);
     m_tiBoostWaits->SetToolTip(_L("Comma-separated list of wait times, one row of cylinders each, front to back. Each stop also "
                                   "takes a few seconds to go to the tower and back; the G-code notes the real time off the "
@@ -2088,16 +2088,13 @@ void Ooze_Reprime_Test_Dlg::update_controls()
     const bool          hover = m_rbStop->GetSelection() == int(OozeStopKind::Hover);
     const OozeCalibTest test  = OozeCalibTest(m_rbTest->GetSelection());
     m_tiCool->Enable(!hover);
-    for (TextInput* ti : {m_tiWaits, m_tiReprimeBase, m_tiReprimeStart, m_tiReprimeStep, m_tiReprimeCount, m_tiLadderLayers})
-        ti->Enable(test == OozeCalibTest::Ladder);
-    for (TextInput* ti : {m_tiWait, m_tiReprimeMid, m_tiCheckStep, m_tiBoxes, m_tiCheckLayers})
-        ti->Enable(test == OozeCalibTest::Check);
-    for (TextInput* ti : {m_tiBoostWaits, m_tiOozeMax, m_tiHalfLife, m_tiBoostStart, m_tiBoostStep, m_tiBoostCount, m_tiBoostDistance,
-                          m_tiBoostLayers})
-        ti->Enable(test == OozeCalibTest::Boost);
-    m_cbPurge->Enable(test == OozeCalibTest::Check && !hover);
+    // Only the selected test's settings, so the dialog stays short enough for one screen.
+    GetSizer()->Show(m_ladder_sizer, test == OozeCalibTest::Ladder, true);
+    GetSizer()->Show(m_check_sizer, test == OozeCalibTest::Check, true);
+    GetSizer()->Show(m_boost_sizer, test == OozeCalibTest::Boost, true);
+    m_cbPurge->Enable(!hover);
     Layout();
-    Fit();
+    GetSizer()->SetSizeHints(this);
 }
 
 void Ooze_Reprime_Test_Dlg::on_start(wxCommandEvent& event)

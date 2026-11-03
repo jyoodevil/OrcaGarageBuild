@@ -212,7 +212,8 @@ double ooze_gcode_time(const std::string &gcode, OozeGCodeClock clock)
             return true;
         };
 
-        if (command == "G0" || command == "G1") {
+        const bool arc = command == "G2" || command == "G3";
+        if (command == "G0" || command == "G1" || arc) {
             Vec3d  to = clock.position;
             double v  = 0.;
             if (get('X', v)) to.x() = v;
@@ -226,9 +227,40 @@ double ooze_gcode_time(const std::string &gcode, OozeGCodeClock clock)
                     clock.e = v;
             }
             const double speed    = clock.feedrate / 60.;
-            const double distance = (to - clock.position).norm();
+            double       distance = (to - clock.position).norm();
+            if (arc) {
+                // An arc runs along its length, a full circle when it ends where it starts, as in a spiral lift.
+                Vec2d center = Vec2d::Zero();
+                double      i = 0., j = 0., r = 0.;
+                const bool  has_i = get('I', i), has_j = get('J', j);
+                const Vec2d from2 = clock.position.head<2>(), to2 = to.head<2>();
+                if (get('R', r) && std::abs(r) > EPSILON) {
+                    const Vec2d  mid   = 0.5 * (from2 + to2);
+                    const Vec2d  chord = to2 - from2;
+                    const double half  = 0.5 * chord.norm();
+                    const double h     = std::sqrt(std::max(0., r * r - half * half));
+                    const Vec2d  n     = chord.norm() > EPSILON ? Vec2d(Vec2d(-chord.y(), chord.x()) / chord.norm()) : Vec2d(Vec2d::Zero());
+                    // R > 0 takes the short way round; the center lies left of the chord for G3, right for G2.
+                    center = mid + ((command == "G3") == (r > 0.) ? h : -h) * n;
+                } else if (has_i || has_j)
+                    center = from2 + Vec2d(i, j);
+                else
+                    center = from2;
+                const Vec2d  a      = from2 - center, b = to2 - center;
+                const double radius = a.norm();
+                double       angle  = 2. * PI;
+                if ((to2 - from2).norm() > EPSILON) {
+                    angle = std::atan2(a.x() * b.y() - a.y() * b.x(), a.dot(b));
+                    if (angle < 0.)
+                        angle += 2. * PI;
+                    if (command == "G2")
+                        angle = 2. * PI - angle;
+                }
+                if (radius > EPSILON)
+                    distance = std::hypot(angle * radius, to.z() - clock.position.z());
+            }
             if (distance > EPSILON) {
-                // Z moves are slow and short; they run at their feedrate.
+                // Z moves are slow and short; they run at their feedrate, and so does a spiral lift.
                 const bool   xy    = (to.head<2>() - clock.position.head<2>()).norm() > EPSILON;
                 const double accel = !xy ? 0. : de > 0. || !(clock.travel_accel > 0.) ? clock.print_accel : clock.travel_accel;
                 seconds += ooze_move_time(distance, speed, accel);

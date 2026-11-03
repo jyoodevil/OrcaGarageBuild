@@ -3324,6 +3324,12 @@ void TabPrint::build()
         optgroup->append_single_option_line("ooze_reprime_boost_distance");
         optgroup->append_single_option_line("ooze_reprime_settle");
 
+        optgroup = page->new_optgroup(L("Ooze strings"), L"param_ooze_prevention");
+        optgroup->append_single_option_line("ooze_chain_sections");
+        optgroup->append_single_option_line("ooze_wipe_limit");
+        optgroup->append_single_option_line("ooze_wipe_max_time");
+        optgroup->append_single_option_line("ooze_wipe_speed");
+
         optgroup = page->new_optgroup(L("Special mode"), L"param_special");
         optgroup->append_single_option_line("slicing_mode", "others_settings_special_mode#slicing-mode");
         optgroup->append_single_option_line("print_sequence", "others_settings_special_mode#print-sequence");
@@ -8802,9 +8808,6 @@ void Tab::update_extruder_variants(int extruder_id, bool reload)
             m_extruder_sync->Enable(false);
         }
     } else if (m_variant_combo) {
-        if (extruder_id >= 0)
-            return;
-
         const int selection = m_variant_combo->GetSelection();
         auto      options   = generate_extruder_options();
         m_variant_combo->SetOptions(options);
@@ -8812,10 +8815,25 @@ void Tab::update_extruder_variants(int extruder_id, bool reload)
         int h_pad  = item_n > 6 ? 6 : (item_n > 4 ? 8 : (item_n > 2 ? 20 : 36));
         m_variant_combo->SetButtonPadding(wxSize(h_pad, 3));
 
+        // OrcaGarageBuild: open on the column slicing uses (the first extruder's drive and nozzle flow type) when
+        // another preset is loaded or the printer's nozzle flow type changes, so edits land where they are used.
+        // Otherwise keep the column picked on the switch.
+        const int         active     = this->active_filament_variant();
+        const std::string active_key = m_presets->get_edited_preset().name + "#" + std::to_string(active);
+        int               pick       = selection < 0 || selection >= (int) options.size() ? 0 : selection;
+        if (active >= 0 && active < (int) options.size() && active_key != m_variant_active_key)
+            pick = active;
+        m_variant_active_key = active_key;
         if (!options.empty())
-            m_variant_combo->SetSelection(selection < 0 || selection >= (int) options.size() ? 0 : selection);
+            m_variant_combo->SetSelection(pick);
+        m_variant_combo->SetToolTip(active >= 0 && active < (int) options.size() ?
+            // TRN %1% is a filament column such as "Direct Drive HF".
+            format_wxstr(_L("Slicing uses the %1% column, for the printer's nozzle flow type."), options[active]) :
+            wxString());
 
         m_variant_combo->Enable(options.size() > 1);
+        // A nozzle flow type change re-targets the whole tab, not one extruder.
+        extruder_id = -1;
     }
     switch_excluder(extruder_id, reload);
     if (m_type == Preset::TYPE_PRINT) {
@@ -8996,6 +9014,19 @@ void TabPrinter::activate_option(const std::string &opt_key, const wxString &cat
     // The page's controls are created for index 0.
     const auto pos = opt_key.find('#');
     Tab::activate_option(pos == std::string::npos ? opt_key : opt_key.substr(0, pos) + "#0", "Extruder");
+}
+
+// OrcaGarageBuild: the column of a filament preset that slicing uses for the first extruder, or -1.
+int Tab::active_filament_variant()
+{
+    if (m_type != Preset::TYPE_FILAMENT)
+        return -1;
+    auto extruders = m_preset_bundle->printers.get_edited_preset().config.option<ConfigOptionEnumsGeneric>("extruder_type");
+    if (!extruders || extruders->values.empty())
+        return -1;
+    const auto &variant_keys = extruder_variant_keys[Preset::TYPE_FILAMENT];
+    return m_config->get_index_for_extruder(1, variant_keys.first, ExtruderType(extruders->values[0]),
+                                            get_actual_nozzle_volume_type(0), variant_keys.second);
 }
 
 NozzleVolumeType Tab::get_actual_nozzle_volume_type(int extruder_id)

@@ -175,6 +175,10 @@ protected:
     LabeledStaticBox* m_ladder_box;
     LabeledStaticBox* m_check_box;
     LabeledStaticBox* m_boost_box;
+    // Only the selected test's box is shown, so the dialog fits on one screen.
+    wxStaticBoxSizer* m_ladder_sizer;
+    wxStaticBoxSizer* m_check_sizer;
+    wxStaticBoxSizer* m_boost_sizer;
 };
 
 class Input_Shaping_Freq_Test_Dlg : public DPIDialog

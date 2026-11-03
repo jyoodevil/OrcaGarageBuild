@@ -5673,6 +5673,10 @@ void Sidebar::search()
 void Sidebar::jump_to_option(const std::string& opt_key, Preset::Type type, const std::wstring& category)
 {
     //const Search::Option& opt = p->searcher.get_option(opt_key, type);
+    // OrcaGarageBuild: an option the current mode hides could not be shown, so show the mode it needs first.
+    if (const ConfigOptionDef *def = print_config_def.get(opt_key);
+        def != nullptr && def->mode > wxGetApp().get_mode() && def->mode < comDevelop)
+        wxGetApp().save_mode(def->mode);
     if (type == Preset::TYPE_PRINT) {
         auto tab = dynamic_cast<TabPrintModel*>(wxGetApp().params_panel()->get_current_tab());
         if (tab && tab->has_key(opt_key)) {

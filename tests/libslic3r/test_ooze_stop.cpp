@@ -174,6 +174,22 @@ TEST_CASE("Ooze timing counts acceleration, retractions and dwells", "[OozeStop]
     CHECK_THAT(ooze_gcode_time(gcode, clock), WithinAbs(2. / 30. + 2. / 5. + 2.1 + 3.5 + 2. / 30., 1e-9));
 }
 
+TEST_CASE("Ooze timing runs arcs along their length, spiral lifts included", "[OozeStop]")
+{
+    OozeGCodeClock clock;
+    // A spiral lift ends where it starts: a full circle of radius 2 while rising 0.7 mm, at 5 mm/s.
+    CHECK_THAT(ooze_gcode_time("G3 Z0.7 I0 J2 P1 F300\n", clock),
+               WithinAbs(std::hypot(2. * PI * 2., 0.7) / 5., 1e-9));
+    // A quarter circle of radius 10 at 10 mm/s with no acceleration limit, by center and by radius.
+    clock.position = Vec3d(10., 0., 0.);
+    const double quarter = 0.5 * PI * 10. / 10.;
+    CHECK_THAT(ooze_gcode_time("G3 X0 Y10 I-10 J0 F600\n", clock), WithinAbs(quarter, 1e-9));
+    CHECK_THAT(ooze_gcode_time("G3 X0 Y10 R10 F600\n", clock), WithinAbs(quarter, 1e-9));
+    // Clockwise the same way round is the other three quarters.
+    CHECK_THAT(ooze_gcode_time("G2 X0 Y10 I-10 J0 F600\n", clock), WithinAbs(3. * quarter, 1e-9));
+    CHECK_THAT(ooze_gcode_time("G2 X0 Y10 R-10 F600\n", clock), WithinAbs(3. * quarter, 1e-9));
+}
+
 TEST_CASE("The boost ladder reprimes every cylinder by the ooze curve and boosts by column", "[OozeStop]")
 {
     OozeCalibParams params;

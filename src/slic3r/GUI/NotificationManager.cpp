@@ -147,10 +147,12 @@ namespace {
 		if (opt_key.empty())
 			return Preset::TYPE_PRINT;
 
-		if (wxGetApp().get_tab(Preset::TYPE_PRINTER)->get_config()->def()->has(opt_key))
+		// OrcaGarageBuild: every preset's config shares one definition, which knows every option, so ask the
+		// presets themselves: each holds only the options of its type.
+		if (wxGetApp().get_tab(Preset::TYPE_PRINTER)->get_config()->has(opt_key))
 			return Preset::TYPE_PRINTER;
 
-		if (wxGetApp().get_tab(Preset::TYPE_FILAMENT)->get_config()->def()->has(opt_key))
+		if (wxGetApp().get_tab(Preset::TYPE_FILAMENT)->get_config()->has(opt_key))
 			return Preset::TYPE_FILAMENT;
 
 		return Preset::TYPE_PRINT;

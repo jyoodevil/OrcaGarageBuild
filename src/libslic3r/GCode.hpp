@@ -2,7 +2,9 @@
 #define slic3r_GCode_hpp_
 
 #include "ExtrusionEntity.hpp"
+#include "ExPolygon.hpp"
 #include "Polygon.hpp"
+#include "Polyline.hpp"
 #include "Config.hpp"
 #include "Print.hpp"
 #include "libslic3r.h"
@@ -897,6 +899,17 @@ protected:
     double                              m_ooze_travel_time     = 0.;
     bool                                m_ooze_reprime_forced  = false;
     bool                                m_ooze_extruded        = false;
+    // Infill wipe before a jump over open air (ooze_wipe_limit): the hidden lines this layer printed last, in print
+    // order, and the layer's material, cached by object and height, to measure the open air a travel crosses.
+    Polyline                            m_ooze_trail;
+    ExtrusionRole                       m_ooze_trail_role   = erNone;
+    double                              m_ooze_trail_z      = 0.;
+    ExPolygons                          m_ooze_ground;
+    const PrintObject                  *m_ooze_ground_object = nullptr;
+    double                              m_ooze_ground_z      = -1.;
+    void        ooze_note_line(const ExtrusionPath &path);
+    double      ooze_air_length(const Polyline &travel);
+    std::string ooze_infill_wipe(const Polyline &travel, double off_time);
     double      ooze_travel_speed();
     // Whether travels are timed for reprime by the time off the print.
     bool        ooze_timing_wanted() const { return m_config.ooze_reprime.value || m_ooze_tower.has_value() || !m_ooze_specs.empty(); }

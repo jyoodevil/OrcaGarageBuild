@@ -7624,7 +7624,16 @@ LayerResult GCode::process_layer(
                 m_last_obj_copy = this_object_copy;
                 this->set_origin(unscale(offset));
                 this->on_set_origin(&instance_to_print.print_object, offset);
-                if (visit.first_visit && instance_to_print.object_by_extruder.support != nullptr) {
+                // OrcaGarageBuild: with the sections chained (ooze_chain_sections), the support is printed where the
+                // chain reaches it instead of first.
+                const bool chain_sections = print.config().ooze_chain_sections.value;
+                const bool support_due    = visit.first_visit && instance_to_print.object_by_extruder.support != nullptr;
+                auto print_support = [&]() {
+                    if (chain_sections) {
+                        // Islands printed before it left their region settings applied.
+                        m_config.apply(print.default_region_config());
+                        m_config.apply(instance_to_print.print_object.config(), true);
+                    }
                     m_layer = layers[instance_to_print.layer_id].support_layer;
                     m_object_layer_over_raft = false;
 
@@ -7658,7 +7667,9 @@ LayerResult GCode::process_layer(
 
                     m_layer = layer_to_print.layer();
                     m_object_layer_over_raft = object_layer_over_raft;
-                }
+                };
+                if (support_due && !chain_sections)
+                    print_support();
                 // Sequential tool path ordering of multiple parts within the same object, aka. perimeter tracking (#5511)
                 // Island print order. Use the islands the tour assigned to this visit; if none,
                 // chain all islands nearest-neighbor from the current nozzle position (last_pos(),
@@ -7699,7 +7710,47 @@ LayerResult GCode::process_layer(
                             island_order.emplace_back(i);
                     }
                 }
+                // OrcaGarageBuild: chain the sections and the support from where the nozzle is, so each layer starts
+                // where the last one ended and runs back the other way, with fewer and shorter jumps over open air.
+                constexpr size_t support_stop = size_t(-2);
+                if (chain_sections) {
+                    const bool chainable = layer_to_print.object_layer != nullptr &&
+                                           islands.size() == layer_to_print.object_layer->lslices.size() + 1;
+                    std::vector<size_t> stops;
+                    Points              stop_points;
+                    std::vector<size_t> rest;
+                    for (size_t idx : island_order)
+                        if (chainable && idx + 1 < islands.size()) {
+                            stops.emplace_back(idx);
+                            stop_points.emplace_back(layer_to_print.object_layer->lslices[idx].contour.centroid());
+                        } else
+                            rest.emplace_back(idx);
+                    if (support_due) {
+                        Points support_points;
+                        instance_to_print.object_by_extruder.support->collect_points(support_points);
+                        if (!support_points.empty()) {
+                            stops.emplace_back(support_stop);
+                            stop_points.emplace_back(BoundingBox(support_points).center());
+                        } else
+                            rest.insert(rest.begin(), support_stop);
+                    }
+                    if (stops.size() > 1) {
+                        const Point         start_near = this->last_pos();
+                        std::vector<size_t> chain      = chain_points(stop_points, this->last_pos_defined() ? &start_near : nullptr);
+                        std::vector<size_t> ordered;
+                        ordered.reserve(stops.size());
+                        for (size_t k : chain)
+                            ordered.emplace_back(stops[k]);
+                        stops = std::move(ordered);
+                    }
+                    stops.insert(stops.end(), rest.begin(), rest.end());
+                    island_order = std::move(stops);
+                }
                 for (size_t island_idx : island_order) {
+                    if (island_idx == support_stop) {
+                        print_support();
+                        continue;
+                    }
                     ObjectByExtruder::Island &island = islands[island_idx];
                     const auto& by_region_specific = is_anything_overridden ? island.by_region_per_copy(by_region_per_copy_cache, static_cast<unsigned int>(instance_to_print.instance_id), extruder_id, print_wipe_extrusions != 0) : island.by_region;
                     // When starting a new object, use the external motion planner for the first travel move.
@@ -10386,6 +10437,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         }
     }
 
+    this->ooze_note_line(path);
     return gcode;
 }
 
@@ -10588,6 +10640,9 @@ std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string
 
         Point last_post_before_retract = this->last_pos();
         gcode += this->retract(false, false, lift_type, false, role);
+        // OrcaGarageBuild: leave the ooze on the infill before a jump over open air.
+        if (ooze_timed && m_config.ooze_wipe_limit.value > 0.)
+            gcode += this->ooze_infill_wipe(travel, ooze_gcode_time(gcode.substr(ooze_travel_from), ooze_travel_clock));
         // When "Wipe while retracting" is enabled, then extruder moves to another position, and travel from this position can cross perimeters.
         // Because of it, it is necessary to call avoid crossing perimeters again with new starting point after calling retraction()
         // FIXME Lukas H.: Try to predict if this second calling of avoid crossing perimeters will be needed or not. It could save computations.
@@ -11427,6 +11482,133 @@ double GCode::ooze_travel_speed()
 {
     const size_t nozzle = get_nozzle_config_index(m_writer.filament()->id());
     return this->on_first_layer() ? m_config.get_abs_value_at("initial_layer_travel_speed", nozzle) : m_config.travel_speed.get_at(nozzle);
+}
+
+// Keeps the trail of hidden lines (infill and support) printed last on this layer, up to 40 mm of it in print
+// order, for the infill wipe. Any other line, or a line that doesn't carry on from the trail, starts it again.
+static constexpr double ooze_trail_length = 40.;
+void GCode::ooze_note_line(const ExtrusionPath &path)
+{
+    if (!(m_config.ooze_wipe_limit.value > 0.) || !m_config.ooze_reprime.value)
+        return;
+    const ExtrusionRole role = path.role();
+    if (!(role == erInternalInfill || role == erSolidInfill || role == erSupportMaterial || role == erSupportTransition)) {
+        m_ooze_trail.clear();
+        return;
+    }
+    Polyline line = path.polyline.to_polyline();
+    if (line.size() < 2)
+        return;
+    if (m_ooze_trail.size() < 2 || std::abs(m_ooze_trail_z - m_nominal_z) > EPSILON ||
+        (m_ooze_trail.last_point() - line.first_point()).cast<double>().norm() > scale_(0.05)) {
+        m_ooze_trail   = std::move(line);
+        m_ooze_trail_z = m_nominal_z;
+    } else
+        m_ooze_trail.append(line.points.begin() + 1, line.points.end());
+    m_ooze_trail_role = role;
+    const double excess = m_ooze_trail.length() - scale_(ooze_trail_length);
+    if (excess > 0.)
+        m_ooze_trail.clip_start(excess);
+}
+
+// Millimetres of a travel over open air: outside the object's sections and support on this layer.
+double GCode::ooze_air_length(const Polyline &travel)
+{
+    if (m_layer == nullptr || travel.size() < 2)
+        return 0.;
+    const PrintObject *object = m_layer->object();
+    const double       z      = m_layer->print_z;
+    if (object != m_ooze_ground_object || std::abs(z - m_ooze_ground_z) > EPSILON) {
+        m_ooze_ground_object = object;
+        m_ooze_ground_z      = z;
+        m_ooze_ground.clear();
+        const bool          on_support    = dynamic_cast<const SupportLayer *>(m_layer) != nullptr;
+        const Layer        *object_layer  = on_support ? object->get_layer_at_printz(z, EPSILON) : m_layer;
+        const SupportLayer *support_layer = on_support ? static_cast<const SupportLayer *>(m_layer) :
+                                                         object->get_support_layer_at_printz(z, EPSILON);
+        if (object_layer != nullptr)
+            append(m_ooze_ground, object_layer->lslices);
+        if (support_layer != nullptr) {
+            if (!support_layer->support_islands.empty())
+                append(m_ooze_ground, support_layer->support_islands);
+            else
+                append(m_ooze_ground, union_ex(support_layer->support_fills.polygons_covered_by_width()));
+        }
+        // Half a millimetre of slack, so a travel along an edge is not over open air.
+        m_ooze_ground = offset_ex(m_ooze_ground, float(scale_(0.5)));
+    }
+    return unscale<double>(total_length(diff_pl(Polylines{ travel }, m_ooze_ground)));
+}
+
+// Before a jump over open air, wipes back and forth at layer height along the trail of infill or support just
+// printed, retracted, so the ooze sticks there instead of stringing behind the nozzle. It wipes until the ooze curve
+// leaves no more than ooze_wipe_limit to come out on the jump, or for ooze_wipe_max_time. off_time is the time
+// since the retraction; the restart reprimes for the wipe too, as it is part of the travel.
+std::string GCode::ooze_infill_wipe(const Polyline &travel, double off_time)
+{
+    const double limit     = m_config.ooze_wipe_limit.value;
+    const double max_ooze  = m_config.ooze_reprime_max.value;
+    const double half_life = m_config.ooze_reprime_half_life.value;
+    if (!m_config.ooze_reprime.value || !(limit > 0.) || !(max_ooze > 0.) || !(half_life > 0.) || m_layer == nullptr ||
+        m_ooze_tower_busy || m_ooze_trail.size() < 2 || std::abs(m_ooze_trail_z - m_nominal_z) > EPSILON ||
+        m_writer.get_zhop() > 0. || m_ooze_specs.count(m_last_obj_copy.first) > 0)
+        return {};
+    const double air = this->ooze_air_length(travel);
+    if (air < 1.)
+        return {};
+    const double speed  = this->ooze_travel_speed();
+    const double accel  = m_writer.last_travel_acceleration() > 0 ? m_writer.last_travel_acceleration() :
+                                                                     NOZZLE_CONFIG(travel_acceleration);
+    const double jump   = ooze_move_time(air, speed, accel);
+    // Ooze on the jump when it starts t seconds after the retraction.
+    const auto   on_jump = [&](double t) { return max_ooze * std::exp2(-t / half_life) * (1. - std::exp2(-jump / half_life)); };
+    const double unwiped = on_jump(off_time);
+    if (!(unwiped > limit))
+        return {};
+    const double wanted = std::min(half_life * std::log2(unwiped / limit), m_config.ooze_wipe_max_time.value);
+    if (wanted < 0.25)
+        return {};
+
+    // The trail from the nozzle back towards its start: the wipe that ended the retraction left the nozzle on it.
+    const Point  here = this->last_pos();
+    size_t       segment = 0;
+    double       nearest = std::numeric_limits<double>::max();
+    for (size_t i = 0; i + 1 < m_ooze_trail.size(); ++i) {
+        const double d = Line(m_ooze_trail.points[i], m_ooze_trail.points[i + 1]).distance_to(here);
+        if (d < nearest) {
+            nearest = d;
+            segment = i;
+        }
+    }
+    if (nearest > scale_(1.))
+        return {};
+    Points track{ here };
+    for (size_t i = segment + 1; i-- > 0;)
+        if (track.back() != m_ooze_trail.points[i])
+            track.emplace_back(m_ooze_trail.points[i]);
+    if (track.size() < 2 || Polyline(track).length() < scale_(3.))
+        return {};
+
+    const double wipe_speed = std::max(1., m_config.ooze_wipe_speed.value);
+    std::string  gcode;
+    double       seconds = 0.;
+    size_t       at = 0, moves = 0;
+    int          dir = 1;
+    while (seconds < wanted && moves < 10000) {
+        if ((dir > 0 && at + 1 >= track.size()) || (dir < 0 && at == 0))
+            dir = -dir;
+        const size_t next = dir > 0 ? at + 1 : at - 1;
+        gcode += m_writer.travel_to_xy(this->point_to_gcode(track[next]), wipe_speed, "ooze: infill wipe");
+        seconds += ooze_move_time(unscale<double>((track[next] - track[at]).cast<double>().norm()), wipe_speed, accel);
+        at = next;
+        ++moves;
+    }
+    this->set_last_pos(track[at]);
+    char note[256];
+    std::snprintf(note, sizeof(note), "; OOZE wipe: %.2f s along %s before %.1f mm over open air, ooze on the way %.3f mm instead of %.3f mm\n",
+                  seconds, ExtrusionEntity::role_to_string(m_ooze_trail_role).c_str(), air, on_jump(off_time + seconds), unwiped);
+    m_ooze_trail.clear();
+    return note + gcode;
 }
 
 // A travel goes through the print's ooze tower when it takes longer than ooze_tower_travel_time and leaves the
