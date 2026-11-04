@@ -2160,6 +2160,8 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionFloat,              ooze_reprime_boost))
     ((ConfigOptionFloat,              ooze_reprime_boost_distance))
     ((ConfigOptionFloat,              ooze_reprime_settle))
+    ((ConfigOptionFloat,              ooze_reprime_boost_time))
+    ((ConfigOptionFloat,              ooze_reprime_flow))
     ((ConfigOptionBool,               ooze_chain_sections))
     ((ConfigOptionFloat,              ooze_wipe_limit))
     ((ConfigOptionFloat,              ooze_wipe_max_time))

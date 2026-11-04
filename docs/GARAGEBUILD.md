@@ -170,6 +170,20 @@ point before the nozzle moves; whatever comes out meanwhile stays there as a blo
 From the calibration: **Maximum ooze** and **Ooze half-life** come from the weighed ladders, and **Start boost** and
 **Boost distance** from the boost ladder.
 
+Two settings size a restart to its stop and its line; both are off at 0, and then every restart is a full one:
+
+- **Full boost after** gives a shorter stop a share of the start boost: the ooze curve's value for the stop over its
+  value at this time, so a 0.75 s hop gets far less than a 10 s wait. A short stop relaxes the nozzle less, so its
+  line needs less to build the pressure back up. Use the time off of the boost ladder row the boost was picked from.
+- **Calibration flow** is the nozzle flow the ladders' walls were printed at (speed × line width × layer height, in
+  mm³/s). A nozzle holds melt in proportion to its pressure, which follows the flow, so a restart onto a slower line
+  (a wave overhang line, a thinner height range, a slow surface) needs less pushed back:
+
+      reprime = curve − Maximum ooze × (1 − share),  boost × share,  share = line flow / Calibration flow (at most 1)
+
+  The note at the restart then gives the line's flow and its share. This is a linear model of the nozzle; a ladder
+  printed at a second flow would show how far it holds.
+
 Travels that stay inside the part leave their drips on the infill. Turn on **Avoid crossing walls** so travels stay
 inside the part, and **Reduce infill retraction** if the drips should go into the infill without a retraction. Use
 the inner/outer wall order so restarts land on an inner wall rather than the outer one.

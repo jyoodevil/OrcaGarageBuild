@@ -3322,6 +3322,8 @@ void TabPrint::build()
         optgroup->append_single_option_line("ooze_reprime_min_time");
         optgroup->append_single_option_line("ooze_reprime_boost");
         optgroup->append_single_option_line("ooze_reprime_boost_distance");
+        optgroup->append_single_option_line("ooze_reprime_boost_time");
+        optgroup->append_single_option_line("ooze_reprime_flow");
         optgroup->append_single_option_line("ooze_reprime_settle");
 
         optgroup = page->new_optgroup(L("Ooze strings"), L"param_ooze_prevention");

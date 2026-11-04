@@ -9357,7 +9357,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     const bool  ooze_can_push = !m_config.use_firmware_retraction.value;
     double      ooze_reprime  = 0.;
     double      ooze_boost    = 0.;
-    std::string ooze_reprime_note;
+    // Seconds off the print of a restart by the ooze curve, or -1.
+    double      ooze_off      = -1.;
     if (m_ooze_restart_extra) {
         if (*m_ooze_restart_extra > 0. && ooze_can_push)
             ooze_reprime = *m_ooze_restart_extra;
@@ -9372,14 +9373,17 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                 (m_writer.get_extruder_retracted_length((int) m_writer.filament()->id()) > 0. &&
                  m_ooze_travel_time >= m_config.ooze_reprime_min_time.value))) {
         // Reprime by the time off the print, from the ooze curve, then boost the start of the line.
-        ooze_reprime = ooze_curve_reprime(m_config.ooze_reprime_max.value, m_config.ooze_reprime_half_life.value, m_ooze_travel_time);
+        const double max_ooze  = m_config.ooze_reprime_max.value;
+        const double half_life = m_config.ooze_reprime_half_life.value;
+        ooze_reprime = ooze_curve_reprime(max_ooze, half_life, m_ooze_travel_time);
         ooze_boost   = m_config.ooze_reprime_boost.value;
+        // A shorter stop relaxes the nozzle less, so its line needs less to build the pressure back up: the boost
+        // follows the curve up to its full value at ooze_reprime_boost_time.
+        if (const double full = ooze_curve_reprime(max_ooze, half_life, m_config.ooze_reprime_boost_time.value); full > 0.)
+            ooze_boost *= std::min(1., ooze_reprime / full);
         if (ooze_reprime > 0. || ooze_boost > 0.) {
             m_writer.filament()->retract(0., 0.);
-            char buf[160];
-            std::snprintf(buf, sizeof(buf), "; OOZE reprime: %.2f s off the print, reprime %.3f mm, boost %.3f mm\n",
-                          m_ooze_travel_time, ooze_reprime, ooze_boost);
-            ooze_reprime_note = buf;
+            ooze_off = m_ooze_travel_time;
             if (m_config.ooze_reprime_settle.value > 0.)
                 m_ooze_restart_dwell = m_config.ooze_reprime_settle.value;
         }
@@ -9390,20 +9394,46 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     m_ooze_travel_time    = 0.;
     m_ooze_extruded       = true;
 
+    // Pushes the reprime and arms the start boost. With a calibration flow (ooze_reprime_flow), a restart by the
+    // curve is sized to the line it starts: a nozzle holds melt in proportion to its pressure, which follows the
+    // flow, so a slower line needs less of what oozed pushed back. The reprime drops by Maximum ooze times the share
+    // of the calibration flow the line lacks, and the boost keeps the line's share. line_flow is in mm^3/s.
+    const auto ooze_push = [&](double line_flow) {
+        std::string out;
+        if (ooze_off >= 0.) {
+            char buf[256];
+            if (line_flow > 0.) {
+                const double share = std::clamp(line_flow / m_config.ooze_reprime_flow.value, 0., 1.);
+                ooze_reprime       = std::max(0., ooze_reprime - m_config.ooze_reprime_max.value * (1. - share));
+                ooze_boost *= share;
+                std::snprintf(buf, sizeof(buf),
+                              "; OOZE reprime: %.2f s off the print, reprime %.3f mm, boost %.3f mm, for a line at %.2f mm3/s, "
+                              "%.3f of the calibration flow\n",
+                              ooze_off, ooze_reprime, ooze_boost, line_flow, share);
+            } else
+                std::snprintf(buf, sizeof(buf), "; OOZE reprime: %.2f s off the print, reprime %.3f mm, boost %.3f mm\n",
+                              ooze_off, ooze_reprime, ooze_boost);
+            out = buf;
+        }
+        if (ooze_reprime > 0.)
+            out += this->ooze_reprime(ooze_reprime);
+        // OrcaGarageBuild: after an ooze stop, give the reprime time to build the pressure up before moving.
+        if (m_ooze_restart_dwell) {
+            out += ooze_dwell_gcode(*m_ooze_restart_dwell, m_ooze_has_chute || this->is_BBL_Printer(), "ooze: let the pressure build");
+            m_ooze_restart_dwell.reset();
+        }
+        m_ooze_boost          = ooze_boost;
+        m_ooze_boost_distance = m_config.ooze_reprime_boost_distance.value;
+        m_ooze_boost_done     = 0.;
+        return out;
+    };
+    // Sized to the line's flow, the push waits for the line's speed.
+    const bool ooze_by_flow = ooze_off >= 0. && m_config.ooze_reprime_flow.value > 0.;
+
     // compensate retraction
     gcode += this->unretract();
-    if (ooze_reprime > 0.)
-        gcode += ooze_reprime_note + this->ooze_reprime(ooze_reprime);
-    else if (!ooze_reprime_note.empty())
-        gcode += ooze_reprime_note;
-    // OrcaGarageBuild: after an ooze stop, give the reprime time to build the pressure up before moving.
-    if (m_ooze_restart_dwell) {
-        gcode += ooze_dwell_gcode(*m_ooze_restart_dwell, m_ooze_has_chute || this->is_BBL_Printer(), "ooze: let the pressure build");
-        m_ooze_restart_dwell.reset();
-    }
-    m_ooze_boost          = ooze_boost;
-    m_ooze_boost_distance = m_config.ooze_reprime_boost_distance.value;
-    m_ooze_boost_done     = 0.;
+    if (!ooze_by_flow)
+        gcode += ooze_push(0.);
     m_config.apply(m_calib_config);
 
     // Orca: optimize for Klipper, set acceleration and jerk in one command
@@ -9827,6 +9857,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     }
 
     double F = speed * 60;  // convert mm/sec to mm/min
+    if (ooze_by_flow)
+        gcode += ooze_push(_mm3_per_mm * speed);
     
     // Orca: Dynamic PA
     // If adaptive PA is enabled, by default evaluate PA on all extrusion moves

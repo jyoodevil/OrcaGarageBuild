@@ -1194,7 +1194,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         toggle_line(el, config->opt_bool("ooze_tower"));
     // The ooze tower restarts with the reprime settings too.
     for (auto el : {"ooze_reprime_max", "ooze_reprime_half_life", "ooze_reprime_min_time", "ooze_reprime_boost",
-                    "ooze_reprime_boost_distance", "ooze_reprime_settle"})
+                    "ooze_reprime_boost_distance", "ooze_reprime_boost_time", "ooze_reprime_flow", "ooze_reprime_settle"})
         toggle_line(el, config->opt_bool("ooze_reprime") || config->opt_bool("ooze_tower"));
     toggle_line("ooze_wipe_limit", config->opt_bool("ooze_reprime"));
     for (auto el : {"ooze_wipe_max_time", "ooze_wipe_speed"})

@@ -5954,12 +5954,14 @@ void PrintConfigDef::init_fff_params()
                      "Default 0.15 is a calibrated reference value for a 0.4 mm nozzle. "
                      "The bead hangs in air rather than being squished against a layer below, so layer "
                      "height has no effect on its cross-section. For non-0.4 mm nozzles, scale as "
-                     "0.15 × (nozzle/0.4)²: about 0.09 for 0.3 mm, 0.34 for 0.6 mm, 0.60 for 0.8 mm.\n\n"
+                     "0.15 × (nozzle/0.4)²: about 0.09 for 0.3 mm, 0.34 for 0.6 mm, 0.60 for 0.8 mm, "
+                     "3.0 for 1.8 mm.\n\n"
                      "Raise if wave lines look thin or broken; lower if they blob together.");
     def->sidetext = L("mm³/mm");
     def->mode = comAdvanced;
     def->min = 0.02;
-    def->max = 1.5;
+    // OrcaGarageBuild: room for large nozzles (0.15 × (1.8 / 0.4)² is about 3).
+    def->max = 10.;
     def->set_default_value(new ConfigOptionFloat(0.15));
 
     def = this->add("wave_overhang_print_speed", coFloat);
@@ -8900,6 +8902,30 @@ void PrintConfigDef::init_fff_params()
     def->min = 0.;
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionFloat(15.));
+
+    def = this->add("ooze_reprime_boost_time", coFloat);
+    def->label = L("Full boost after");
+    def->tooltip = L("A restart after a shorter stop than this gets a share of the start boost, in proportion to what "
+                     "the ooze curve says the nozzle lost: a short stop relaxes the nozzle less, so its line needs less "
+                     "to build the pressure back up. Stops this long or longer get the full boost. Use the time off of "
+                     "the boost ladder row the start boost was picked from. 0 for the full boost after every restart.");
+    def->sidetext = L("s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("ooze_reprime_flow", coFloat);
+    def->label = L("Calibration flow");
+    def->tooltip = L("Nozzle flow the ooze curve and start boost were measured at, in mm³/s: the speed times the line "
+                     "width times the layer height of the ladders' walls. A nozzle holds melt in proportion to its "
+                     "pressure, which follows the flow, so a restart onto a slower line, such as a wave overhang line, a "
+                     "thinner layer or a slow surface, needs less pushed back: its reprime drops by Maximum ooze times "
+                     "the share of this flow the line lacks, and its start boost keeps the line's share. Lines at or "
+                     "above this flow restart in full. 0 to restart every line in full.");
+    def->sidetext = L("mm³/s");
+    def->min = 0.;
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionFloat(0.));
 
     def = this->add("ooze_reprime_settle", coFloat);
     def->label = L("Settle after the reprime");

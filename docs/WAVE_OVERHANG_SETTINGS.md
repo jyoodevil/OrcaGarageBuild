@@ -125,10 +125,10 @@ Center-to-center distance between adjacent wave extrusions.
 
 Absolute volume of plastic extruded per millimetre of wave-overhang line. Replaces the old `wave_overhang_flow_ratio`.
 
-- **Type:** float (mm³/mm) · **Default:** `0.16` · **Range:** `0.02 to 1.5`
+- **Type:** float (mm³/mm) · **Default:** `0.16` · **Range:** `0.02 to 10`
 - **Why absolute (not a ratio):** a wave-overhang line hangs in air, not squished against a layer below. Nothing to squish into means layer height has no effect on the bead's cross-section; the bead size is set by nozzle bore and mm³/mm extrusion rate alone. An absolute mm³/mm captures that directly.
 - **Why 0.16:** equals `nozzle²` for a 0.4 mm nozzle, which also matches the old `flow_ratio = 2.0` at 0.2 mm layer height.
-- **For other nozzle sizes:** use `nozzle_diameter²` as a starting point. 0.3 mm → 0.09, 0.5 mm → 0.25, 0.6 mm → 0.36, 0.8 mm → 0.64. The setting is not automatically adjusted when you change the printer profile, so update it by hand if you move between nozzle sizes.
+- **For other nozzle sizes:** use `nozzle_diameter²` as a starting point. 0.3 mm → 0.09, 0.5 mm → 0.25, 0.6 mm → 0.36, 0.8 mm → 0.64, 1.8 mm → about 3. The setting is not automatically adjusted when you change the printer profile, so update it by hand if you move between nozzle sizes.
 
 **Tuning guide:**
 - Start at `0.16` (or `nozzle²` for your nozzle) and print.

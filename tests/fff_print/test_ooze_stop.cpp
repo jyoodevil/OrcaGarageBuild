@@ -343,7 +343,8 @@ void set_ooze_reprime(DynamicPrintConfig &config, bool reprime, double boost)
 // Two 4 mm cubes 140 mm apart at 50 mm/s travel and 500 mm/s^2, so a trip between them takes at least
 // 140 / 50 + 50 / 500 = 2.9 s, optionally with the print's ooze tower between and behind them, draining for 2 s,
 // and with reprime by the time off the print. One wall makes every line after a restart a loop of about 12 mm.
-std::string slice_two_cubes(bool tower, bool reprime, double boost = 0., int walls = 2)
+std::string slice_two_cubes(bool tower, bool reprime, double boost = 0., int walls = 2,
+                            std::initializer_list<ConfigBase::SetDeserializeItem> extra = {})
 {
     DynamicPrintConfig config = ooze_config();
     config.set_deserialize_strict({
@@ -364,6 +365,7 @@ std::string slice_two_cubes(bool tower, bool reprime, double boost = 0., int wal
         {"ooze_tower_drain", 2},
     });
     set_ooze_reprime(config, reprime, boost);
+    config.set_deserialize_strict(extra);
     Print print;
     Model model;
     Test::init_print(std::vector<TriangleMesh>{Test::cube(4.), Test::cube(4.)}, print, model, config);
@@ -816,4 +818,85 @@ TEST_CASE("A restart onto ironing pushes no reprime or boost", "[OozeStop][OozeR
     CHECK(ironing_reprimed == 0);
     // The jumps between the sections still reprime.
     CHECK(other_reprimed >= 29);
+}
+
+namespace {
+
+// "; OOZE reprime: <t> s off the print, reprime <r> mm, boost <b> mm[, for a line at <q> mm3/s, <share> of the
+// calibration flow]" notes. flow and share are -1 on notes without them.
+struct BoostNote
+{
+    double time, reprime, boost, flow = -1., share = -1.;
+};
+std::vector<BoostNote> boost_notes(const std::string &gcode)
+{
+    std::vector<BoostNote> out;
+    std::istringstream     in(gcode);
+    std::string            line;
+    while (std::getline(in, line)) {
+        BoostNote n{};
+        const int got = std::sscanf(line.c_str(),
+                                    "; OOZE reprime: %lf s off the print, reprime %lf mm, boost %lf mm, for a line at %lf mm3/s, %lf",
+                                    &n.time, &n.reprime, &n.boost, &n.flow, &n.share);
+        if (got >= 3)
+            out.push_back(n);
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("A restart onto a line below the calibration flow pushes back less", "[OozeStop][OozeReprime]")
+{
+    // A calibration flow far above the cubes' walls only reports the flow of the line each restart starts.
+    const std::vector<BoostNote> probe = boost_notes(slice_two_cubes(false, true, 1., 2, {{"ooze_reprime_flow", 1000}}));
+    REQUIRE(probe.size() >= size_t(ooze_layers - 1));
+    REQUIRE(probe.front().flow > 0.);
+    for (const BoostNote &n : probe) {
+        INFO("restart after " << n.time << " s onto a line at " << n.flow << " mm3/s");
+        CHECK_THAT(n.share, WithinAbs(n.flow / 1000., 1e-3));
+        CHECK_THAT(n.reprime, WithinAbs(std::max(0., curve(n.time) - ooze_max * (1. - n.share)), 2e-3));
+        CHECK_THAT(n.boost, WithinAbs(n.share, 2e-3));
+    }
+
+    // With the calibration flow at 4/3 of the first line's, that line keeps three quarters: its reprime drops by a
+    // quarter of the maximum ooze, its boost to three quarters, and the push is the smaller reprime.
+    const double                   calibration = probe.front().flow * 4. / 3.;
+    const std::string              gcode       = slice_two_cubes(false, true, 1., 2, {{"ooze_reprime_flow", calibration}});
+    const std::vector<BoostNote>   notes       = boost_notes(gcode);
+    const std::vector<ReprimeNote> pushes      = reprime_notes(gcode);
+    REQUIRE(notes.size() == pushes.size());
+    REQUIRE(notes.size() >= size_t(ooze_layers - 1));
+    size_t reduced = 0;
+    for (size_t i = 0; i < notes.size(); ++i) {
+        const BoostNote &n = notes[i];
+        INFO("restart after " << n.time << " s onto a line at " << n.flow << " mm3/s");
+        const double share = std::min(1., n.flow / calibration);
+        CHECK_THAT(n.share, WithinAbs(share, 1e-3));
+        CHECK_THAT(n.reprime, WithinAbs(std::max(0., curve(n.time) - ooze_max * (1. - share)), 2e-3));
+        CHECK_THAT(n.boost, WithinAbs(share, 2e-3));
+        if (n.reprime > 0.)
+            CHECK_THAT(pushes[i].pushed, WithinAbs(n.reprime, 1e-3));
+        if (share < 0.99)
+            ++reduced;
+    }
+    CHECK(reduced > 0);
+}
+
+TEST_CASE("A restart after a short stop gets the ooze curve's share of the start boost", "[OozeStop][OozeReprime]")
+{
+    // The full boost only after 10 s off: the trips of about 3 s between the cubes get the curve's share of it.
+    const std::string               gcode  = slice_two_cubes(false, true, 1., 1, {{"ooze_reprime_boost_time", 10}});
+    const std::vector<BoostNote>    notes  = boost_notes(gcode);
+    const std::vector<BoostedStart> starts = boosted_starts(gcode, "; OOZE reprime", 4.);
+    INFO(after_first(gcode, "; OOZE reprime"));
+    REQUIRE(notes.size() >= size_t(ooze_layers - 1));
+    REQUIRE(starts.size() == notes.size());
+    for (size_t i = 0; i < notes.size(); ++i) {
+        INFO("restart after " << notes[i].time << " s");
+        const double share = std::min(1., curve(notes[i].time) / curve(10.));
+        CHECK(share < 0.9);
+        CHECK_THAT(notes[i].boost, WithinAbs(share, 2e-3));
+        CHECK_THAT(starts[i].extra, WithinAbs(notes[i].boost, 0.01));
+    }
 }
