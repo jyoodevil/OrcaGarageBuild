@@ -117,9 +117,12 @@ double ooze_boost_share(double from_mm, double to_mm, double distance_mm);
 double ooze_move_time(double distance, double speed, double accel);
 
 // Seconds a piece of G-code takes to run, for timing how long the nozzle is off the print. Reads
-// G0/G1 moves and G2/G3 arcs (each from rest to rest; an arc ending where it starts is a full circle, as
-// in a spiral lift), M204 accelerations, SET_VELOCITY_LIMIT, and G4 and M400 dwells.
-// start is the position in the G-code's own coordinates; e moves count only when they move no axis.
+// G0/G1 moves and G2/G3 arcs (an arc ending where it starts is a full circle, as in a spiral lift), M204
+// accelerations, M205 jerk, SET_VELOCITY_LIMIT, and G4 and M400 dwells. With a jerk, a run of moves carries
+// its speed through the corners between them, up to jerk / (2 sin(turn / 2)), as a jerk-limited planner
+// does, and stops only at its ends; without one, every move starts and ends at rest. Arcs, Z-only and
+// E-only moves start and end at rest. position is in the G-code's own coordinates; e moves count only when
+// they move no axis.
 struct OozeGCodeClock
 {
     Vec3d  position     = Vec3d::Zero();
@@ -128,6 +131,7 @@ struct OozeGCodeClock
     double feedrate     = 0.; // mm/min
     bool   relative_e   = true;
     double e            = 0.; // extruder position, with absolute E
+    double jerk         = 0.; // speed change allowed at a corner, mm/s; 0: none known
 };
 double ooze_gcode_time(const std::string &gcode, OozeGCodeClock clock);
 

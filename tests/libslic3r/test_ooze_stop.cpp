@@ -406,3 +406,30 @@ TEST_CASE("An ooze tower loop closes on its start at the given radius", "[OozeSt
     for (const Vec2d &p : loop)
         CHECK_THAT((p - center).norm(), WithinAbs(5., 1e-9));
 }
+
+TEST_CASE("With a corner jerk, a travel carries its speed through gentle corners and slows at sharp ones", "[OozeStop]")
+{
+    OozeGCodeClock clock;
+    clock.print_accel = clock.travel_accel = 45.;
+    clock.feedrate    = 1800.;
+    // 100 pieces of 1 mm in a line at 30 mm/s and 45 mm/s^2, as a detour cut into short segments.
+    std::string pieces;
+    for (int i = 1; i <= 100; ++i)
+        pieces += "G1 X" + std::to_string(i) + "\n";
+    const double straight = 100. / 30. + 30. / 45.;
+    CHECK_THAT(ooze_gcode_time(pieces, clock), WithinAbs(100. * 2. * std::sqrt(1. / 45.), 1e-6)); // no jerk: stop at each
+    clock.jerk = 9.;
+    CHECK_THAT(ooze_gcode_time(pieces, clock), WithinAbs(straight, 1e-6));
+
+    // A right angle between two 50 mm moves at 30 mm/s: the corner runs at 9 / (2 sin 45°).
+    const double corner = 9. / (2. * std::sin(PI / 4.));
+    const double v = 30., a = 45., L = 50.;
+    // Each move speeds up from rest (or brakes to rest) and brakes to (or speeds up from) the corner speed.
+    const double each = v / a + (v - corner) / a + (L - v * v / (2. * a) - (v * v - corner * corner) / (2. * a)) / v;
+    CHECK_THAT(ooze_gcode_time("G1 X50\nG1 Y50\n", clock), WithinAbs(2. * each, 1e-6));
+    // A dwell or an E-only move stops the run.
+    CHECK_THAT(ooze_gcode_time("G1 X50\nG4 P0\nG1 X100\n", clock), WithinAbs(2. * (L / v + v / a), 1e-6));
+    // M205 sets the jerk the run uses.
+    clock.jerk = 0.;
+    CHECK_THAT(ooze_gcode_time("M205 X9 Y9\n" + pieces, clock), WithinAbs(straight, 1e-6));
+}

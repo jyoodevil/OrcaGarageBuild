@@ -156,7 +156,9 @@ at least **Minimum travel time**, printing restarts with
 
 in place of the extra length on restart. The time off runs from the retraction to the restart, and is worked out from
 the G-code the travel writes: the retraction and wipe, the Z hop (a spiral lift runs its whole circle at the Z travel
-speed), the travel with its acceleration, and any detour that **Avoid crossing walls** adds. The travel from the start
+speed), the travel with its acceleration, and any detour that **Avoid crossing walls** adds. A travel keeps its speed
+through its corners as far as the printer's jerk (**Machine limits**) allows, so a detour cut into many short pieces
+counts about as long as the printer takes to run it. The travel from the start
 G-code to the first part is not counted.
 
 The reprime is pushed after the retraction goes back, at half the filament's maximum volumetric speed, so it melts as

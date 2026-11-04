@@ -11138,6 +11138,10 @@ OozeGCodeClock GCode::ooze_clock()
     clock.feedrate        = m_writer.get_current_speed();
     clock.relative_e      = m_config.use_relative_e_distances.value;
     clock.e               = m_writer.filament() != nullptr ? m_writer.filament()->E() : 0.;
+    // The machine's corner jerk, which the start G-code sets (M205) and a travel runs with: a travel of many short
+    // pieces, such as a detour around a wall, keeps its speed through them.
+    if (!m_config.machine_max_jerk_x.values.empty() && !m_config.machine_max_jerk_y.values.empty())
+        clock.jerk = std::max(0., std::min(m_config.machine_max_jerk_x.get_at(0), m_config.machine_max_jerk_y.get_at(0)));
     return clock;
 }
 
@@ -11626,16 +11630,23 @@ std::string GCode::ooze_infill_wipe(const Polyline &travel, double off_time)
         return {};
 
     const double wipe_speed = std::max(1., m_config.ooze_wipe_speed.value);
+    // With a corner jerk the wipe keeps its speed along the trail and stops only to turn back, as ooze_gcode_time()
+    // counts it: each stop and start costs speed / accel on top of the distance at speed.
+    const bool   flowing    = this->ooze_clock().jerk > 0.;
+    const double turn_cost  = flowing && accel > 0. ? wipe_speed / accel : 0.;
     std::string  gcode;
-    double       seconds = 0.;
+    double       seconds = turn_cost;
     size_t       at = 0, moves = 0;
     int          dir = 1;
     while (seconds < wanted && moves < 10000) {
-        if ((dir > 0 && at + 1 >= track.size()) || (dir < 0 && at == 0))
+        if ((dir > 0 && at + 1 >= track.size()) || (dir < 0 && at == 0)) {
             dir = -dir;
-        const size_t next = dir > 0 ? at + 1 : at - 1;
+            seconds += turn_cost;
+        }
+        const size_t next   = dir > 0 ? at + 1 : at - 1;
+        const double length = unscale<double>((track[next] - track[at]).cast<double>().norm());
         gcode += m_writer.travel_to_xy(this->point_to_gcode(track[next]), wipe_speed, "ooze: infill wipe");
-        seconds += ooze_move_time(unscale<double>((track[next] - track[at]).cast<double>().norm()), wipe_speed, accel);
+        seconds += flowing ? length / wipe_speed : ooze_move_time(length, wipe_speed, accel);
         at = next;
         ++moves;
     }

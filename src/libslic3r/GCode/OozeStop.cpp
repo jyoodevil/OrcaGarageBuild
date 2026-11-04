@@ -8,6 +8,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/I18N.hpp"
@@ -174,10 +175,62 @@ double ooze_move_time(double distance, double speed, double accel)
     return 2. * std::sqrt(distance / accel);
 }
 
+namespace {
+
+struct OozeRunMove
+{
+    Vec3d  dir;
+    double length, speed, accel;
+};
+
+// Seconds a run of moves takes from rest to rest, carrying speed through each corner up to what the jerk allows
+// for its turn, and no faster than the moves around a corner can brake from or reach.
+double ooze_run_time(const std::vector<OozeRunMove> &moves, double jerk)
+{
+    const size_t n = moves.size();
+    std::vector<double> v(n + 1, 0.);
+    for (size_t i = 1; i < n; ++i) {
+        const double cos_turn = std::clamp(moves[i - 1].dir.dot(moves[i].dir), -1., 1.);
+        const double half_sin = std::sqrt(std::max(0., 0.5 * (1. - cos_turn)));
+        v[i] = std::min(moves[i - 1].speed, moves[i].speed);
+        if (half_sin > 1e-9)
+            v[i] = std::min(v[i], jerk / (2. * half_sin));
+    }
+    for (size_t i = n; i-- > 0;)
+        if (moves[i].accel > 0.)
+            v[i] = std::min(v[i], std::sqrt(v[i + 1] * v[i + 1] + 2. * moves[i].accel * moves[i].length));
+    for (size_t i = 0; i < n; ++i)
+        if (moves[i].accel > 0.)
+            v[i + 1] = std::min(v[i + 1], std::sqrt(v[i] * v[i] + 2. * moves[i].accel * moves[i].length));
+    double seconds = 0.;
+    for (size_t i = 0; i < n; ++i) {
+        const OozeRunMove &m = moves[i];
+        if (!(m.accel > 0.)) {
+            seconds += m.length / m.speed;
+            continue;
+        }
+        // Speed up from the entry speed, cruise, and brake to the exit speed, reaching full speed if there is room.
+        const double v0 = v[i], v1 = v[i + 1], a = m.accel;
+        const double peak = std::min(m.speed, std::sqrt(std::max(0., (2. * a * m.length + v0 * v0 + v1 * v1) / 2.)));
+        const double ramps = (std::max(0., peak * peak - v0 * v0) + std::max(0., peak * peak - v1 * v1)) / (2. * a);
+        seconds += (std::max(0., peak - v0) + std::max(0., peak - v1)) / a + (peak > 0. ? std::max(0., m.length - ramps) / peak : 0.);
+    }
+    return seconds;
+}
+
+} // namespace
+
 double ooze_gcode_time(const std::string &gcode, OozeGCodeClock clock)
 {
     double seconds = 0.;
     size_t begin   = 0;
+    // Moves carrying speed through their corners, timed together once something stops them.
+    std::vector<OozeRunMove> run;
+    const auto end_run = [&]() {
+        if (!run.empty())
+            seconds += ooze_run_time(run, clock.jerk);
+        run.clear();
+    };
     while (begin < gcode.size()) {
         size_t end = gcode.find('\n', begin);
         if (end == std::string::npos)
@@ -263,11 +316,19 @@ double ooze_gcode_time(const std::string &gcode, OozeGCodeClock clock)
                 // Z moves are slow and short; they run at their feedrate, and so does a spiral lift.
                 const bool   xy    = (to.head<2>() - clock.position.head<2>()).norm() > EPSILON;
                 const double accel = !xy ? 0. : de > 0. || !(clock.travel_accel > 0.) ? clock.print_accel : clock.travel_accel;
-                seconds += ooze_move_time(distance, speed, accel);
-            } else if (std::abs(de) > 0. && speed > 0.)
+                if (xy && !arc && clock.jerk > 0. && speed > 0.)
+                    run.push_back({ (to - clock.position) / distance, distance, speed, accel });
+                else {
+                    end_run();
+                    seconds += ooze_move_time(distance, speed, accel);
+                }
+            } else if (std::abs(de) > 0. && speed > 0.) {
+                end_run();
                 seconds += std::abs(de) / speed;
+            }
             clock.position = to;
         } else if (command == "G4" || command == "M400") {
+            end_run();
             double v = 0.;
             if (get('S', v))
                 seconds += std::max(0., v);
@@ -281,9 +342,16 @@ double ooze_gcode_time(const std::string &gcode, OozeGCodeClock clock)
                 clock.print_accel = v;
             if (get('T', v))
                 clock.travel_accel = v;
+        } else if (command == "M205") {
+            double x = 0., y = 0.;
+            if (get('X', x) && get('Y', y))
+                clock.jerk = std::min(x, y);
+            else if (get('X', x))
+                clock.jerk = x;
         } else if (command == "SET_VELOCITY_LIMIT" && accel_word > 0.)
             clock.print_accel = clock.travel_accel = accel_word;
     }
+    end_run();
     return seconds;
 }
 
