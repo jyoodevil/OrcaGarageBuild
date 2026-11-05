@@ -8664,7 +8664,9 @@ std::string GCode::extrude_loop(const ExtrusionLoop&                       loop_
             fake_path_wipe.set_force_no_extrusion(true);
             fake_path_wipe.mm3_per_mm = 0;
             //fake_path_wipe.set_extrusion_role(erExternalPerimeter);
+            m_ooze_lead_in_mm3_per_mm = paths.front().mm3_per_mm;
             gcode += extrude_path(fake_path_wipe, "move inwards before retraction/seam", speed);
+            m_ooze_lead_in_mm3_per_mm = 0.;
         }
     }
 
@@ -9503,45 +9505,51 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     // calculate effective extrusion length per distance unit (e_per_mm)
     double filament_flow_ratio = FILAMENT_CONFIG(filament_flow_ratio);
     // We set _mm3_per_mm to effectove flow = Geometric volume * print flow ratio * filament flow ratio * role-based-flow-ratios
-    auto _mm3_per_mm = path.mm3_per_mm * this->config().print_flow_ratio;
-    _mm3_per_mm *= filament_flow_ratio;
+    // OrcaGarageBuild: as a function of the geometric flow, so a dry lead-in into a wall can size its ooze restart by
+    // the wall's flow through the same ratios.
+    const auto effective_mm3_per_mm = [&](double mm3_per_mm) {
+        auto _mm3_per_mm = mm3_per_mm * this->config().print_flow_ratio;
+        _mm3_per_mm *= filament_flow_ratio;
 
-    if (path.role() == erTopSolidInfill) {
-        _mm3_per_mm *= NOZZLE_CONFIG(top_solid_infill_flow_ratio);
-    } else if (path.role() == erBottomSurface) {
-        _mm3_per_mm *= m_config.bottom_solid_infill_flow_ratio;
-    } else if (path.role() == erInternalBridgeInfill) {
-        _mm3_per_mm *= m_config.internal_bridge_flow;
-    } else if (path.role() == erBrim) {
-        _mm3_per_mm *= m_config.brim_flow_ratio;
-    } else if (sloped) {
-        _mm3_per_mm *= m_config.scarf_joint_flow_ratio;
-    }
-
-    if (m_config.set_other_flow_ratios) {
-        if (path.role() == erExternalPerimeter) {
-            _mm3_per_mm *= m_config.outer_wall_flow_ratio;
-        } else if (path.role() == erPerimeter) {
-            _mm3_per_mm *= m_config.inner_wall_flow_ratio;
-        } else if (path.role() == erOverhangPerimeter) {
-            _mm3_per_mm *= m_config.overhang_flow_ratio;
-        } else if (path.role() == erInternalInfill) {
-            _mm3_per_mm *= m_config.sparse_infill_flow_ratio;
-        } else if (path.role() == erSolidInfill) {
-            _mm3_per_mm *= m_config.internal_solid_infill_flow_ratio;
-        } else if (path.role() == erGapFill) {
-            _mm3_per_mm *= m_config.gap_fill_flow_ratio;
-        } else if (path.role() == erSupportMaterial) { // Should this condition also cover erSupportTransition?
-            _mm3_per_mm *= m_config.support_flow_ratio;
-        } else if (path.role() == erSupportMaterialInterface) {
-            _mm3_per_mm *= m_config.support_interface_flow_ratio;
+        if (path.role() == erTopSolidInfill) {
+            _mm3_per_mm *= NOZZLE_CONFIG(top_solid_infill_flow_ratio);
+        } else if (path.role() == erBottomSurface) {
+            _mm3_per_mm *= m_config.bottom_solid_infill_flow_ratio;
+        } else if (path.role() == erInternalBridgeInfill) {
+            _mm3_per_mm *= m_config.internal_bridge_flow;
+        } else if (path.role() == erBrim) {
+            _mm3_per_mm *= m_config.brim_flow_ratio;
+        } else if (sloped) {
+            _mm3_per_mm *= m_config.scarf_joint_flow_ratio;
         }
 
-        // Additionally, adjust the value if we are on the first layer (except for brims and skirts)
-        if (path_on_first_layer && (path.role() != erBrim && path.role() != erSkirt)) {
-            _mm3_per_mm *= m_config.first_layer_flow_ratio;
+        if (m_config.set_other_flow_ratios) {
+            if (path.role() == erExternalPerimeter) {
+                _mm3_per_mm *= m_config.outer_wall_flow_ratio;
+            } else if (path.role() == erPerimeter) {
+                _mm3_per_mm *= m_config.inner_wall_flow_ratio;
+            } else if (path.role() == erOverhangPerimeter) {
+                _mm3_per_mm *= m_config.overhang_flow_ratio;
+            } else if (path.role() == erInternalInfill) {
+                _mm3_per_mm *= m_config.sparse_infill_flow_ratio;
+            } else if (path.role() == erSolidInfill) {
+                _mm3_per_mm *= m_config.internal_solid_infill_flow_ratio;
+            } else if (path.role() == erGapFill) {
+                _mm3_per_mm *= m_config.gap_fill_flow_ratio;
+            } else if (path.role() == erSupportMaterial) { // Should this condition also cover erSupportTransition?
+                _mm3_per_mm *= m_config.support_flow_ratio;
+            } else if (path.role() == erSupportMaterialInterface) {
+                _mm3_per_mm *= m_config.support_interface_flow_ratio;
+            }
+
+            // Additionally, adjust the value if we are on the first layer (except for brims and skirts)
+            if (path_on_first_layer && (path.role() != erBrim && path.role() != erSkirt)) {
+                _mm3_per_mm *= m_config.first_layer_flow_ratio;
+            }
         }
-    }
+        return _mm3_per_mm;
+    };
+    auto _mm3_per_mm = effective_mm3_per_mm(path.mm3_per_mm);
 
     // Mixed-color sublayer: this path belongs to one sub-layer of a split layer, so scale the
     // flow down to that sub-layer's share of the nominal layer height and report the sub-height
@@ -9857,8 +9865,17 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     }
 
     double F = speed * 60;  // convert mm/sec to mm/min
-    if (ooze_by_flow)
-        gcode += ooze_push(_mm3_per_mm * speed);
+    if (ooze_by_flow) {
+        // A dry lead-in into an outer wall extrudes nothing, so its restart is sized to the wall, at the lead-in's
+        // speed within the volumetric limit.
+        double line_flow = _mm3_per_mm * speed;
+        if (path.is_force_no_extrusion() && m_ooze_lead_in_mm3_per_mm > 0.) {
+            line_flow = effective_mm3_per_mm(m_ooze_lead_in_mm3_per_mm) * speed;
+            if (FILAMENT_CONFIG(filament_max_volumetric_speed) > 0)
+                line_flow = std::min(line_flow, double(FILAMENT_CONFIG(filament_max_volumetric_speed)));
+        }
+        gcode += ooze_push(line_flow);
+    }
     
     // Orca: Dynamic PA
     // If adaptive PA is enabled, by default evaluate PA on all extrusion moves

@@ -184,7 +184,8 @@ Two settings size a restart to its stop and its line; both are off at 0, and the
       reprime = curve − Maximum ooze × (1 − share),  boost × share,  share = line flow / Calibration flow (at most 1)
 
   The note at the restart then gives the line's flow and its share. This is a linear model of the nozzle; a ladder
-  printed at a second flow would show how far it holds.
+  printed at a second flow would show how far it holds. With **Wipe before external loop**, a restart on the dry
+  move into an outer wall is sized to that wall.
 
 Travels that stay inside the part leave their drips on the infill. Turn on **Avoid crossing walls** so travels stay
 inside the part, and **Reduce infill retraction** if the drips should go into the infill without a retraction. Use

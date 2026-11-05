@@ -899,6 +899,9 @@ protected:
     double                              m_ooze_travel_time     = 0.;
     bool                                m_ooze_reprime_forced  = false;
     bool                                m_ooze_extruded        = false;
+    // Flow (mm^3/mm) of the outer wall a dry lead-in (wipe_before_external_loop) moves to while it is extruded, so
+    // a restart on the lead-in is sized to that wall; 0 otherwise.
+    double                              m_ooze_lead_in_mm3_per_mm = 0.;
     // Infill wipe before a jump over open air (ooze_wipe_limit): the hidden lines this layer printed last, in print
     // order, and the layer's material, cached by object and height, to measure the open air a travel crosses.
     Polyline                            m_ooze_trail;

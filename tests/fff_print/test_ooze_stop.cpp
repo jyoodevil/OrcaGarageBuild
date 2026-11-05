@@ -20,6 +20,7 @@
 
 using namespace Slic3r;
 using Catch::Matchers::WithinAbs;
+using Catch::Matchers::WithinRel;
 
 namespace {
 
@@ -881,6 +882,45 @@ TEST_CASE("A restart onto a line below the calibration flow pushes back less", "
             ++reduced;
     }
     CHECK(reduced > 0);
+}
+
+TEST_CASE("A restart on the dry lead-in into an outer wall is sized to the wall", "[OozeStop][OozeReprime]")
+{
+    // Outer walls first, so every restart starts an outer wall. Wipe before external loop leads into it with a dry
+    // move from inside, which carries no flow of its own: its restart takes the wall's, as it does without the move.
+    const auto slice = [](bool lead_in) {
+        return slice_two_cubes(false, true, 1., 2,
+                               {{"ooze_reprime_flow", 1000},
+                                {"wall_sequence", "outer wall/inner wall"},
+                                {"wipe_before_external_loop", lead_in ? 1 : 0}});
+    };
+    const std::string            gcode  = slice(true);
+    const std::vector<BoostNote> led    = boost_notes(gcode);
+    const std::vector<BoostNote> direct = boost_notes(slice(false));
+
+    // A dry lead-in is an XY move without E as the first move after the restart.
+    size_t             lead_ins = 0;
+    std::istringstream in(gcode);
+    std::string        line;
+    bool               after_restart = false;
+    while (std::getline(in, line)) {
+        if (line.rfind("; OOZE reprime", 0) == 0)
+            after_restart = true;
+        else if (after_restart && line.rfind("G1 ", 0) == 0 && (line.find(" X") != std::string::npos || line.find(" Y") != std::string::npos)) {
+            if (line.find(" E") == std::string::npos)
+                ++lead_ins;
+            after_restart = false;
+        }
+    }
+    INFO(after_first(gcode, "; OOZE reprime"));
+    REQUIRE(lead_ins >= size_t(ooze_layers - 1));
+    REQUIRE(direct.size() >= size_t(ooze_layers - 1));
+    REQUIRE(led.size() == direct.size());
+    for (size_t i = 0; i < led.size(); ++i) {
+        INFO("restart " << i << " after " << led[i].time << " s");
+        REQUIRE(direct[i].flow > 0.);
+        CHECK_THAT(led[i].flow, WithinRel(direct[i].flow, 1e-3));
+    }
 }
 
 TEST_CASE("A restart after a short stop gets the ooze curve's share of the start boost", "[OozeStop][OozeReprime]")
